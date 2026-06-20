@@ -8,6 +8,7 @@ secrets redacted at the source.
 
 from __future__ import annotations
 
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -39,4 +40,6 @@ def run_gitleaks(source: Path, timeout: float = 120.0) -> tuple[str, str]:
     except subprocess.TimeoutExpired as exc:
         raise CheckError(f"gitleaks timed out after {timeout}s.") from exc
     output = (proc.stdout or "") + (proc.stderr or "")
-    return " ".join(argv), output
+    # shlex.join preserves quoting so the recorded command stays reproducible
+    # even when the source path contains spaces.
+    return shlex.join(argv), output

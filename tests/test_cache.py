@@ -79,3 +79,10 @@ def test_is_fresh_false_when_stale():
 
 def test_is_fresh_none_cache():
     assert is_fresh(None, Settings()) is False
+
+
+def test_is_fresh_naive_timestamp_treated_as_stale():
+    # A hand-edited timestamp without tz offset must not crash is_fresh.
+    cached = build_cache(Settings(), [])
+    cached.fetched_at = "2026-06-20T10:00:00"  # naive, no offset
+    assert is_fresh(cached, Settings()) is False

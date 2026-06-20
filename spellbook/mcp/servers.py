@@ -55,7 +55,8 @@ def _github_server() -> dict | None:
     return {
         "command": "npx",
         "args": ["-y", os.environ.get("GITHUB_MCP_PACKAGE", "@modelcontextprotocol/server-github")],
-        "env": {"GITHUB_PERSONAL_ACCESS_TOKEN": token},
+        # Forward under both names so we don't couple to one server's expected key.
+        "env": {"GITHUB_PERSONAL_ACCESS_TOKEN": token, "GITHUB_TOKEN": token},
     }
 
 
@@ -66,7 +67,8 @@ def _notion_server() -> dict | None:
     return {
         "command": "npx",
         "args": ["-y", os.environ.get("NOTION_MCP_PACKAGE", "@notionhq/notion-mcp-server")],
-        "env": {"NOTION_API_KEY": token},
+        # Forward under both names so we don't couple to one server's expected key.
+        "env": {"NOTION_API_KEY": token, "NOTION_TOKEN": token},
     }
 
 

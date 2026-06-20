@@ -81,8 +81,11 @@ def test_ensure_wiz_auth_prompts_and_sets_env(monkeypatch):
     monkeypatch.delenv("WIZ_CLIENT_SECRET", raising=False)
     monkeypatch.setattr(auth, "exchange_token", lambda cid, secret: "tok")
 
-    answers = iter(["my-id", "my-secret"])
-    ok = ensure_wiz_auth(input_fn=lambda _: next(answers), output_fn=lambda _: None)
+    ok = ensure_wiz_auth(
+        input_fn=lambda _: "my-id",
+        secret_fn=lambda _: "my-secret",
+        output_fn=lambda _: None,
+    )
 
     assert ok is True
     assert auth.os.environ["WIZ_CLIENT_ID"] == "my-id"
@@ -97,11 +100,31 @@ def test_ensure_wiz_auth_failure_does_not_set_env(monkeypatch):
         raise WizAuthError("nope")
 
     monkeypatch.setattr(auth, "exchange_token", fail)
-    answers = iter(["my-id", "my-secret"])
-    ok = ensure_wiz_auth(input_fn=lambda _: next(answers), output_fn=lambda _: None)
+    ok = ensure_wiz_auth(
+        input_fn=lambda _: "my-id",
+        secret_fn=lambda _: "my-secret",
+        output_fn=lambda _: None,
+    )
 
     assert ok is False
     assert "WIZ_CLIENT_ID" not in auth.os.environ
+
+
+def test_ensure_wiz_auth_clears_invalid_env_creds(monkeypatch):
+    monkeypatch.setenv("WIZ_CLIENT_ID", "stale-id")
+    monkeypatch.setenv("WIZ_CLIENT_SECRET", "stale-secret")
+
+    def fail(cid, secret):
+        raise WizAuthError("nope")
+
+    monkeypatch.setattr(auth, "exchange_token", fail)
+    ok = ensure_wiz_auth(input_fn=lambda _: None, secret_fn=lambda _: None,
+                         output_fn=lambda _: None)
+
+    assert ok is False
+    # Invalid env creds are dropped so a later attempt can reprompt.
+    assert "WIZ_CLIENT_ID" not in auth.os.environ
+    assert "WIZ_CLIENT_SECRET" not in auth.os.environ
 
 
 def test_ensure_wiz_auth_validates_existing_env(monkeypatch):

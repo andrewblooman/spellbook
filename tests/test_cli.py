@@ -60,6 +60,22 @@ def test_menu_loop_dispatches_investigate(monkeypatch):
     assert ran == {"issue_id": "WIZ-1", "subject": {"x": 1}}
 
 
+def test_load_or_fetch_truncates_cached_to_issue_count(monkeypatch):
+    from spellbook.config import Settings
+    from spellbook.wiz.cache import CachedIssue, IssueCache
+
+    cached = IssueCache(
+        fetched_at="2026-06-20T10:00:00+00:00",
+        settings_fingerprint="5:HIGH",
+        issues=[CachedIssue(id=f"WIZ-{n}") for n in range(5)],
+    )
+    monkeypatch.setattr(cli, "load_cache", lambda: cached)
+
+    # wiz unavailable → serve cache, but honour the lowered count.
+    result = cli._load_or_fetch_issues(Settings(issue_count=2), wiz_available=False, refresh=False)
+    assert [i.id for i in result] == ["WIZ-0", "WIZ-1"]
+
+
 def test_menu_loop_settings_persists(monkeypatch):
     from spellbook.config import Settings
     from spellbook.menu import MenuSelection

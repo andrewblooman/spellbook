@@ -23,6 +23,7 @@ the auto-detection for tenants on a non-standard host.
 
 from __future__ import annotations
 
+import getpass
 import os
 
 import httpx
@@ -91,22 +92,24 @@ def exchange_token(client_id: str, client_secret: str, *,
     )
 
 
-def ensure_wiz_auth(input_fn=input, output_fn=print) -> bool:
+def ensure_wiz_auth(input_fn=input, output_fn=print, secret_fn=getpass.getpass) -> bool:
     """Make Wiz usable for this session, prompting + validating if needed.
 
     Returns True when WIZ_CLIENT_ID/SECRET are present and validated. On success
-    the (validated) credentials live in os.environ for the process only.
+    the (validated) credentials live in os.environ for the process only. The secret
+    is read via ``secret_fn`` (getpass — non-echoing) so it never appears on screen.
     """
     client_id = os.environ.get("WIZ_CLIENT_ID")
     client_secret = os.environ.get("WIZ_CLIENT_SECRET")
+    from_env = bool(client_id and client_secret)
 
-    if not (client_id and client_secret):
+    if not from_env:
         output_fn(
             "Authenticate to Wiz (OAuth2 client-credentials). "
             "Credentials are used for this session only and never written to disk."
         )
         client_id = _prompt("Wiz client id: ", input_fn)
-        client_secret = _prompt("Wiz client secret: ", input_fn)
+        client_secret = _prompt("Wiz client secret: ", secret_fn)
         if not (client_id and client_secret):
             output_fn("Authentication cancelled — no credentials entered.")
             return False
@@ -115,6 +118,12 @@ def ensure_wiz_auth(input_fn=input, output_fn=print) -> bool:
         exchange_token(client_id, client_secret)
     except WizAuthError as exc:
         output_fn(f"Wiz authentication failed: {exc}")
+        if from_env:
+            # Drop the invalid env creds so the next attempt reprompts instead of
+            # silently re-validating the same bad values (wiz_configured() would
+            # otherwise keep reporting true).
+            os.environ.pop("WIZ_CLIENT_ID", None)
+            os.environ.pop("WIZ_CLIENT_SECRET", None)
         return False
 
     # Validated: expose to the session so mcp_servers() picks them up.

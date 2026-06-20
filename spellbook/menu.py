@@ -17,7 +17,8 @@ from spellbook.config import SEVERITIES, Settings
 
 @dataclass(frozen=True)
 class MenuSelection:
-    action: str  # "investigate" | "settings" | "authenticate" | "refresh" | "quit"
+    # action ∈ investigate | chat | collect | settings | authenticate | refresh | quit
+    action: str
     issue_id: str | None = None
     subject_file: Path | None = None
     subject: dict | None = None

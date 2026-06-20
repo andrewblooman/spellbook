@@ -92,6 +92,10 @@ def is_fresh(cache: IssueCache | None, settings: Settings, ttl_seconds: int = 36
         fetched = datetime.fromisoformat(cache.fetched_at)
     except ValueError:
         return False
+    if fetched.tzinfo is None:
+        # A hand-edited/naive timestamp can't be compared to an aware now();
+        # treat it as stale rather than risk a TypeError that crashes the launcher.
+        return False
     age = (datetime.now(timezone.utc) - fetched).total_seconds()
     return age < ttl_seconds
 

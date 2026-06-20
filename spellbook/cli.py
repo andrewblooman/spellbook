@@ -122,19 +122,22 @@ def _run_collect() -> None:
 def _load_or_fetch_issues(settings, wiz_available: bool, refresh: bool) -> list:
     """Return the top-issues list, fetching from Wiz when needed. Never raises."""
     cache = load_cache()
+    # Always honour the current count when serving cached issues, so lowering the
+    # count is reflected immediately rather than only after the next live fetch.
+    cached = cache.issues[: settings.issue_count] if cache else []
     if not wiz_available:
-        return cache.issues if cache else []
+        return cached
     if not refresh and not settings.auto_fetch:
-        return cache.issues if cache else []
+        return cached
     if not refresh and is_fresh(cache, settings):
-        return cache.issues
+        return cached
 
     typer.echo("Fetching top issues from Wiz…")
     try:
         issues = anyio.run(fetch_top_issues, settings)
     except Exception as exc:  # fetch failures must never crash the launcher
         typer.secho(f"Could not fetch issues: {exc}", fg=typer.colors.YELLOW)
-        return cache.issues if cache else []
+        return cached
     save_cache(build_cache(settings, issues))
     return issues
 
@@ -156,6 +159,8 @@ def _menu_loop() -> None:
             settings = edit_settings(settings)
             save_settings(settings)
             typer.echo("Settings saved.")
+            # Reflect the new count/severity in the displayed feed right away.
+            issues = _load_or_fetch_issues(settings, wiz_available, refresh=False)
         elif action == "authenticate":
             if ensure_wiz_auth():
                 wiz_available = wiz_configured()
