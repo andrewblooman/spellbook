@@ -34,7 +34,8 @@ def _subject_scope(case) -> set[str]:
     return hosts
 
 
-def build_options(store: CaseStore, mode: str) -> ClaudeAgentOptions:
+def build_options(store: CaseStore, mode: str,
+                  system_prompt: str | None = None) -> ClaudeAgentOptions:
     case = store.case
     interactive = mode == "interactive"
     scope = _subject_scope(case)
@@ -48,7 +49,7 @@ def build_options(store: CaseStore, mode: str) -> ClaudeAgentOptions:
         allowed_tools=PASSIVE_TOOLS,
         disallowed_tools=[],
         permission_mode="default",
-        system_prompt=build_system_prompt(case, mode),
+        system_prompt=system_prompt or build_system_prompt(case, mode),
         model="claude-sonnet-4-6",
         max_turns=None if interactive else 40,
         include_partial_messages=interactive,

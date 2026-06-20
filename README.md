@@ -86,6 +86,19 @@ claude login                       # interactive, recommended
 export WIZ_CLIENT_ID=...
 export WIZ_CLIENT_SECRET=...
 export WIZ_MCP_ISSUE_TOOL=get_issue   # override if the server's tool name differs
+export WIZ_MCP_LIST_TOOL=list_issues  # tool used to pull the top-issues feed
+# Or skip the exports: the launcher's "Authenticate to Wiz" action prompts for the
+# client id/secret and validates them via an OAuth2 client-credentials exchange —
+# kept in the session only, never written to disk. It auto-detects which Wiz IdP your
+# tenant uses (Cognito auth.app.wiz.io / Auth0 auth.wiz.io). Force one if needed:
+# export WIZ_TOKEN_URL=https://auth.wiz.io/oauth/token  WIZ_AUDIENCE=beyond-api
+
+# --- Business-context sources (optional: read-only enrichment) ---
+# Each is enabled only when its token is present. The agent reads them to establish
+# ownership/intent behind an issue. Writes (create/update/comment) are gate-denied.
+export GITHUB_PERSONAL_ACCESS_TOKEN=...   # repo ownership, README, recent commits
+export NOTION_API_KEY=...                 # runbooks, accepted-risk docs
+export LINEAR_API_KEY=...                 # is the issue already tracked / accepted?
 
 # --- Scope allowlist (owned assets the agent may probe over the network) ---
 # Comma-separated hosts / domains. Subdomains are matched automatically.
@@ -145,8 +158,43 @@ wants to run an *active* check, it will pause and ask you to approve — and it 
 target hosts on your scope allowlist.
 
 Running `spellbook` with no arguments in an interactive terminal now opens a
-numbered terminal menu so you can choose between offline and Wiz-backed investigation
-without remembering the exact command line. Direct subcommands still work unchanged.
+numbered terminal launcher. Direct subcommands still work unchanged.
+
+### 2b. Settings & top issues
+
+The launcher is a small workbench. On startup, if Wiz is configured and auto-fetch
+is on, it pulls your **top issues** (via the agent + Wiz MCP), caches them, and lists
+them so you can press a number to open a case with that issue already loaded as the
+subject — you start triaging immediately, in context.
+
+```
+Spellbook
+Top Wiz issues (high+, 5):
+  1. WIZ-12345  CRITICAL  Exposed AWS key — github-repo acme/widget-api
+  2. WIZ-12346  HIGH      Public S3 bucket — s3 acme-prod-logs
+  ...
+Actions:
+  f. Investigate from subject file     c. Chat with the analyst AI
+  w. Investigate by Wiz issue id       r. Refresh top issues
+  e. Collect evidence manually         s. Settings
+                                       a. Authenticate to Wiz   h. Help   q. Quit
+```
+
+- **A `spellbook` banner** greets you when the launcher opens.
+- **`a` Authenticate to Wiz** — prompts for client id/secret and validates them with an
+  OAuth2 client-credentials exchange (auto-detecting your tenant's Cognito/Auth0 endpoint).
+  Session-only; nothing is written to disk.
+- **`e` Collect evidence manually** — run a deterministic check (gitleaks, redacted)
+  directly on a local repo and append the raw output to a case as evidence — no agent in
+  the loop.
+- **`c` Chat with the analyst AI** — a free-form, safety-gated chat (also `spellbook chat`)
+  for reasoning and suggested lines of investigation, not pinned to a specific case.
+- **`s` Settings** — how many issues to pull (1–10), the minimum severity
+  (`CRITICAL`/`HIGH`/`MEDIUM`), and whether to auto-fetch on startup. Preferences persist
+  to `~/.config/spellbook/settings.json`; the cached feed lives at
+  `~/.cache/spellbook/top_issues.json` (issue metadata only — never credentials).
+- **`r` Refresh** — re-pull the feed now. Otherwise a fresh cache (≤ 1h, same settings)
+  is reused. `spellbook settings` edits the same preferences from the command line.
 
 ### 3. Inspect the case
 
@@ -161,7 +209,15 @@ cases/WIZ-12345/
 ```
 
 ```bash
-cat cases/WIZ-12345/audit.log
+spellbook show WIZ-12345        # subject + evidence chain + verdict, rendered
+cat cases/WIZ-12345/audit.log   # or read the raw audit trail
+```
+
+After a session you're offered to **record a verdict** (confirmed / refuted /
+inconclusive + rationale); you can also set one directly:
+
+```bash
+spellbook verdict WIZ-12345 --status confirmed --rationale "E001, E003 confirm the leak"
 ```
 
 Example audit trail:

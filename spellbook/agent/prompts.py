@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 
 from spellbook.case.model import Case
+from spellbook.mcp.servers import context_sources
 
 _SAFETY_RULES = """\
 HARD RULES (enforced deterministically by the harness; stated here so you don't fight them):
@@ -39,13 +40,42 @@ investigation, and to back that with a verifiable evidence chain.
 
 Use the `soc-analyst` skill to orchestrate the investigation and the available check
 skills (e.g. `gitleaks-check`) to gather evidence.
-
+{_context_block()}
 Case: {case.id}  (Wiz issue {case.wiz_issue_id})
 Mode: {posture}
 Subject:
 {subject}
 
 {_SAFETY_RULES}"""
+
+
+def _context_block() -> str:
+    sources = context_sources()
+    if not sources:
+        return ""
+    pretty = {"github": "the GitHub repo (ownership, README, recent commits)",
+              "notion": "Notion pages (runbooks, accepted-risk docs)",
+              "linear": "Linear tickets (is this already tracked or accepted?)"}
+    lines = "\n".join(f"  - {pretty.get(s, s)} via the `{s}` MCP read tools" for s in sources)
+    return (
+        "\nBusiness-context sources are connected — use them (READ-ONLY) to establish "
+        "ownership and intent behind the issue:\n" + lines + "\n"
+    )
+
+
+def chat_system_prompt() -> str:
+    sources = context_sources()
+    context_line = (
+        f"\nConnected read-only context sources: {', '.join(sources)}." if sources else ""
+    )
+    return f"""\
+You are a senior cloud-security analyst assistant in an interactive chat. Help the
+user reason about security issues, suggest lines of investigation, and run passive
+checks or read connected sources when asked. You are not pinned to a specific Wiz
+case here.{context_line}
+
+Use the available skills (e.g. `soc-analyst`, `gitleaks-check`) and read tools when
+they help. {_SAFETY_RULES}"""
 
 
 def opening_prompt(case: Case) -> str:
