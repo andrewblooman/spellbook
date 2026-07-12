@@ -53,6 +53,7 @@ class Run(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     finding_id: Mapped[str] = mapped_column(ForeignKey("findings.id"))
+    attack_path_id: Mapped[str | None] = mapped_column(ForeignKey("attack_paths.id"), nullable=True)
     posture: Mapped[str] = mapped_column(String)
     tier: Mapped[str] = mapped_column(String)
     status: Mapped[str] = mapped_column(String, default="pending")
@@ -70,6 +71,9 @@ class Run(Base):
     )
     audit: Mapped[list["AuditRecord"]] = relationship(
         back_populates="run", cascade="all, delete-orphan", order_by="AuditRecord.ts",
+    )
+    step_results: Mapped[list["StepResultRecord"]] = relationship(
+        back_populates="run", cascade="all, delete-orphan", order_by="StepResultRecord.step_index",
     )
 
 
@@ -102,6 +106,55 @@ class AuditRecord(Base):
     detail: Mapped[dict] = mapped_column(JSON, default=dict)
 
     run: Mapped[Run | None] = relationship(back_populates="audit")
+
+
+class AttackPathRecord(Base):
+    __tablename__ = "attack_paths"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    finding_id: Mapped[str] = mapped_column(ForeignKey("findings.id"))
+    name: Mapped[str] = mapped_column(String, default="")
+    source: Mapped[str] = mapped_column(String, default="manual")
+    entry_point: Mapped[str] = mapped_column(String, default="")
+    impact: Mapped[str] = mapped_column(String, default="")
+    raw: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    steps: Mapped[list["AttackStepRecord"]] = relationship(
+        back_populates="path", cascade="all, delete-orphan", order_by="AttackStepRecord.step_index",
+    )
+
+
+class AttackStepRecord(Base):
+    __tablename__ = "attack_steps"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    path_id: Mapped[str] = mapped_column(ForeignKey("attack_paths.id"))
+    step_index: Mapped[int] = mapped_column(Integer)
+    technique: Mapped[str] = mapped_column(String)
+    description: Mapped[str] = mapped_column(String, default="")
+    from_entity: Mapped[str] = mapped_column(String, default="")
+    to_entity: Mapped[str] = mapped_column(String, default="")
+    posture: Mapped[str] = mapped_column(String)
+    suggested_tool: Mapped[str | None] = mapped_column(String, nullable=True)
+    tier: Mapped[str] = mapped_column(String)
+
+    path: Mapped[AttackPathRecord] = relationship(back_populates="steps")
+
+
+class StepResultRecord(Base):
+    __tablename__ = "step_results"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"))
+    path_id: Mapped[str | None] = mapped_column(ForeignKey("attack_paths.id"), nullable=True)
+    step_index: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String)
+    tool: Mapped[str] = mapped_column(String, default="")
+    observation: Mapped[str] = mapped_column(String, default="")
+    interpretation: Mapped[str] = mapped_column(String, default="")
+
+    run: Mapped["Run"] = relationship(back_populates="step_results")
 
 
 class AuthorizationRecord(Base):

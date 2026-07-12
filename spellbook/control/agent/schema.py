@@ -12,6 +12,8 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
+from spellbook.control.ingest.model import StepStatus
+
 
 class VerdictLabel(str, Enum):
     EXPLOITABLE = "EXPLOITABLE"
@@ -28,6 +30,15 @@ class EvidenceStep(BaseModel):
     interpretation: str = Field(description="What this implies about exploitability.")
 
 
+class StepVerdict(BaseModel):
+    """The validation outcome for one attack-path step (per-step diagnosis)."""
+
+    step_index: int
+    status: StepStatus
+    observation: str = ""
+    interpretation: str = ""
+
+
 class Verdict(BaseModel):
     label: VerdictLabel
     confidence: float = Field(ge=0.0, le=1.0)
@@ -37,4 +48,8 @@ class Verdict(BaseModel):
     attack_path: list[str] = Field(
         default_factory=list,
         description="For the internal posture: the ordered lateral-movement pivots.",
+    )
+    step_results: list[StepVerdict] = Field(
+        default_factory=list,
+        description="Per-step validation of the attack path (one entry per validated step).",
     )

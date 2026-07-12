@@ -4,37 +4,111 @@
 
 ![Python](https://img.shields.io/badge/python-3.14%2B-3776AB?logo=python&logoColor=white)
 ![License](https://img.shields.io/github/license/andrewblooman/spellbook)
-![Status](https://img.shields.io/badge/status-Milestone%200-6f42c1)
+![Status](https://img.shields.io/badge/status-M0%20spine%20merged-6f42c1)
 
-**Spellbook** triages cloud-security issues from [Wiz](https://www.wiz.io/) with an
-evidence-backed, safety-gated AI agent. It opens a **case** for an issue, runs a
-SOC-analyst agent (built on the [Claude Agent SDK](https://platform.claude.com/docs/en/agent-sdk/overview))
-that drives validated **skills** through read-only checks, and renders a verifiable
-evidence chain — while a deterministic safety layer blocks anything destructive or
-out-of-scope before it can run.
+**Spellbook** answers the question a vulnerability scanner can't: *is this finding actually
+exploitable, right now, in our cloud?* It ingests findings from [Wiz](https://www.wiz.io/)
+(or manual entry) and runs **agent-driven validation tests** against your own GCP assets
+from two vantage points, producing an evidence-backed exploitability verdict — while a
+deterministic safety layer enforces scope and gates real exploitation behind signed
+authorization.
 
-> **Status: Milestone 0** — the runnable spine. `investigate` works end-to-end
-> (interactive, steerable). The other verbs (`run`, `batch`, `show`, `export`,
-> `replay`, `remediate`) are scaffolded and announce themselves as planned for later
-> milestones. See [Roadmap](#roadmap).
+- **Shields up — external agent** (internet vantage, outside the VPC): can an
+  unauthenticated attacker exploit this finding from outside?
+- **Shields down — internal agent** (assumed-breach, inside the VPC): can it be pivoted
+  for lateral movement toward crown jewels?
+
+A finding is modelled as an **attack path** — a linear chain of steps from entry point to
+impact. A run walks the chain and returns a **Verdict** (`EXPLOITABLE` / `NOT_EXPLOITABLE`
+/ `INCONCLUSIVE` + confidence) *and* a **per-step diagnosis** showing exactly where the
+chain holds or breaks — rendered in a React SPA whose hero is the attack-path spine.
+
+> **History:** Spellbook began as a read-only Wiz *triage* CLI (built on the Claude Agent
+> SDK). It was **repurposed** into this exploitability-validation platform. The legacy CLI
+> modules still live in the tree (see [Legacy triage CLI](#legacy-triage-cli)) but are
+> superseded by the control plane described here.
+
+> **Status: M0 spine merged; attack paths + Wiz ingestion + SPA built.** Safety core,
+> runner, agent client, store, orchestrator, the FastAPI control plane, the attack-path
+> model, direct Wiz GraphQL ingestion, and the Vite/React UI are built and tested
+> (161 tests). The open item is the live Gemini wiring — see [Live verification](#live-verification).
+
+---
+
+## Architecture
+
+The key insight: **Google Managed Agents run in Google's sandbox, not inside your VPC.**
+So the agent is the *brain*; its *hands* inside your network are a **remote-MCP
+"attack-runner"** you deploy on a VPC connector. Same bounded tool contract for both
+postures — only the network vantage differs.
+
+```
+                        ┌───────────────────────────────────────┐
+   React/HTML UI ─────▶ │  Spellbook control plane (FastAPI)     │
+                        │  • findings ingest (Wiz GraphQL + manual) │
+                        │  • orchestrator + pre-launch gate      │
+                        │  • store (SQLAlchemy: runs/evidence)   │
+                        └──────┬──────────────────────┬──────────┘
+                   Gemini      │ background:true      │ scoped, short-lived
+                  Interactions │                      │ GCP creds
+                        ┌──────▼──────────────┐       │
+                        │ Google Managed Agent │      │
+                        │ (Gemini sandbox)     │      │
+                        └───┬──────────────┬───┘      │
+              remote MCP    │              │  remote MCP
+          (external runner) │              │  (internal runner)
+                 ┌──────────▼───┐   ┌──────▼──────────────────┐
+                 │ EXTERNAL      │   │ INTERNAL                 │
+                 │ "shields up"  │   │ "shields down"           │
+                 │ internet      │   │ Cloud Run + VPC egress   │
+                 │ vantage       │   │ INSIDE the target VPC    │
+                 └──────────────┘   └─────────────────────────┘
+```
+
+Every tool call is classified, scope-checked, and audited **server-side at the runner
+boundary** — the agent's intent is never trusted.
 
 ---
 
 ## Why it's safe by construction
 
-The model's instructions are *advisory*. Spellbook's guarantees are *enforced* by a
-deterministic `PreToolUse` hook that classifies every tool call before it executes:
+The model's instructions are *advisory*. Spellbook's guarantee is the deterministic
+`decide()` (`spellbook/control/safety/decide.py`), run **twice** — once in the control
+plane before a run launches, and again in the runner on every tool call:
 
-| Side effect | Examples | Interactive | Unattended |
-|---|---|---|---|
-| **passive** (read-only) | `gitleaks`, `git log`, `gh repo view`, Wiz read tools | ✅ allow | ✅ allow |
-| **active-noninvasive** (reaches a live host) | `curl`, `trufflehog`, `nuclei` | ❓ ask you | ⛔ deny |
-| **active-invasive** (state-changing) | `rm`, `terraform apply`, `aws s3 rm`, MCP `*_create/_update/_delete` | ⛔ deny | ⛔ deny |
-| **out-of-scope host** (any network target not on the allowlist) | `curl https://evil.example` | ⛔ deny | ⛔ deny |
+| Tier | Examples | Gate |
+|---|---|---|
+| **passive** | reachability probe, port fingerprint, IAM read/enumerate | ✅ allow (in scope) |
+| **active-noninvasive** | auth-bypass probe, SSRF callback, metadata-token read | ✅ allow (in scope) — **default ceiling** |
+| **active-invasive / full-exploit** | real PoC payload, actual privilege escalation | ⛔ deny **unless** a valid `Authorization` covers this exact target |
+| **out-of-scope target** | anything not on the owned-asset allowlist | ⛔ deny always |
 
-Every decision and every tool run is written to the case's `audit.log`. Untrusted input
-(issue text, READMEs, commit messages) is treated as **data, never instructions**, and
-secret values are redacted before they re-enter the model's context.
+- **Scope** (`control/safety/scope.py`) is an owned-asset allowlist over hostnames, IPs,
+  and CIDRs, derived from the Wiz asset inventory plus `SPELLBOOK_SCOPE`. Default-deny.
+- **Authorization** (`control/safety/authorization.py`) is a signed, expiring, per-target
+  grant with a mandatory blast-radius note — the only thing that unlocks the exploit tier.
+- **Audit** — every decision (allow *or* deny) is written to the run's audit trail.
+- Finding text is treated as **untrusted data, never instructions**.
+
+---
+
+## Attack paths
+
+A finding carries an **attack path**: an ordered chain of `AttackStep`s
+(`control/ingest/model.py`), each a technique (`public_exposure`, `auth_bypass`,
+`credential_theft`, `iam_privesc`, …) moving from one entity to the next, tagged with the
+posture it belongs to. Paths come from two places:
+
+- **Wiz GraphQL** (`control/ingest/wiz_api.py`) — `WizClient` pulls issues (reusing
+  `wiz/auth.py::exchange_token`) and `map_issue` normalises each into a Finding + path.
+- **Manual** — define a path by hand in the UI (or `POST /attack-paths`) for something Wiz
+  hasn't flagged.
+
+Because a path spans both postures, **one run validates one posture's steps**; the other
+posture's steps are validated by a separate run, and the path view **merges step results
+across runs**. Each run returns per-step statuses (`validated` / `refuted` /
+`inconclusive` / `skipped`) plus the holistic verdict — so you see the exact step where a
+chain breaks.
 
 ---
 
@@ -43,14 +117,13 @@ secret values are redacted before they re-enter the model's context.
 | Requirement | Why | Check |
 |---|---|---|
 | **Python ≥ 3.14** | the package runtime | `python3.14 --version` |
-| **Claude Code CLI** | the Agent SDK drives it under the hood | `claude --version` |
-| **Anthropic auth** | model access — `claude login` *or* `ANTHROPIC_API_KEY` | `claude login` |
-| **Node.js + npx** | runs MCP servers (e.g. Wiz) | `node --version` |
-| **gitleaks** | the passive secret-scan check | `gitleaks version` |
-| **Wiz API creds** *(optional)* | live issue ingestion via the Wiz MCP server | see [Configuration](#configuration) |
+| **Gemini API key** *(for live runs)* | drives the validation agent (`google-genai`) | — |
+| **Node ≥ 18 + npm** *(for the UI)* | builds the Vite/React SPA | `node --version` |
+| **Wiz API creds + URL** *(optional)* | live finding ingestion via the Wiz GraphQL API | see [Configuration](#configuration) |
+| **GCP project + VPC connector** *(for the internal posture)* | hosts the in-VPC attack-runner | — |
 
-The check binaries you need depend on which skills you run; Milestone 0 only needs
-`gitleaks`. Install it from <https://github.com/gitleaks/gitleaks>.
+Local development and the safety/runner/store/API tests need **none** of these — the agent
+backend is injectable and exercised with a fake.
 
 ---
 
@@ -59,258 +132,158 @@ The check binaries you need depend on which skills you run; Milestone 0 only nee
 ```bash
 git clone <this-repo> spellbook
 cd spellbook
-
-# editable install (recommended while developing)
-pip install --user -e .
-
-# verify
-spellbook --help
+python3.14 -m venv .venv && source .venv/bin/activate
+pip install -e .
 ```
-
-This installs the `spellbook` console command. (Prefer a virtualenv:
-`python3.14 -m venv .venv && source .venv/bin/activate && pip install -e .`.)
 
 ---
 
 ## Configuration
 
-Spellbook reads everything sensitive from the environment — nothing is persisted into
-case files.
+Everything sensitive comes from the environment — nothing is persisted with a run.
 
 ```bash
-# --- Anthropic (one of these) ---
-claude login                       # interactive, recommended
-# export ANTHROPIC_API_KEY=sk-...  # or an API key
+# --- Gemini (the validation agent) ---
+export GEMINI_API_KEY=...                 # or GOOGLE_API_KEY, per google-genai
+# model defaults to gemini-2.5-pro (GoogleAgentClient(model=...) to override)
 
-# --- Wiz MCP (optional: enables live issue ingestion) ---
-export WIZ_CLIENT_ID=...
-export WIZ_CLIENT_SECRET=...
-export WIZ_MCP_ISSUE_TOOL=get_issue   # override if the server's tool name differs
-export WIZ_MCP_LIST_TOOL=list_issues  # tool used to pull the top-issues feed
-# Or skip the exports: the launcher's "Authenticate to Wiz" action prompts for the
-# client id/secret and validates them via an OAuth2 client-credentials exchange —
-# kept in the session only, never written to disk. It auto-detects which Wiz IdP your
-# tenant uses (Cognito auth.app.wiz.io / Auth0 auth.wiz.io). Force one if needed:
-# export WIZ_TOKEN_URL=https://auth.wiz.io/oauth/token  WIZ_AUDIENCE=beyond-api
+# --- Wiz GraphQL (optional: live finding ingestion) ---
+export WIZ_API_URL=https://api.<region>.app.wiz.io/graphql   # your tenant's endpoint
+export WIZ_CLIENT_ID=...  WIZ_CLIENT_SECRET=...
+# export WIZ_ISSUES_QUERY_FILE=./issues.graphql   # override the default Issues query
 
-# --- Business-context sources (optional: read-only enrichment) ---
-# Each is enabled only when its token is present. The agent reads them to establish
-# ownership/intent behind an issue. Writes (create/update/comment) are gate-denied.
-export GITHUB_PERSONAL_ACCESS_TOKEN=...   # repo ownership, README, recent commits
-export NOTION_API_KEY=...                 # runbooks, accepted-risk docs
-export LINEAR_API_KEY=...                 # is the issue already tracked / accepted?
-
-# --- Scope allowlist (owned assets the agent may probe over the network) ---
-# Comma-separated hosts / domains. Subdomains are matched automatically.
-# The subject's own repo/host is always added to scope.
-export SPELLBOOK_SCOPE="acme.com,github.com/acme"
-```
-
-Without Wiz creds you can still triage offline using `--subject-file` (below).
-
----
-
-## Usage — step by step
-
-### 1. (Offline) Describe the subject
-
-If you don't have Wiz MCP creds wired up yet, hand Spellbook the issue subject as JSON.
-A starter file ships as `sample_subject.json`:
-
-```json
-{
-  "type": "exposed_secret",
-  "resource": "github-repo",
-  "repo": "https://github.com/acme/widget-api",
-  "exposure": "AWS access key detected in commit history",
-  "severity": "high"
-}
-```
-
-### 2. Investigate
-
-```bash
-# numbered terminal menu
-spellbook
-
-# offline (subject from file)
-spellbook investigate WIZ-12345 --subject-file sample_subject.json
-
-# live (subject pulled from Wiz MCP — requires WIZ_* creds)
-spellbook investigate WIZ-12345
-
-# explicit launcher command
-spellbook menu
-```
-
-This opens (or resumes) the case at `cases/WIZ-12345/`, then drops you into a
-**steerable session**:
-
-```
-spellbook› <type a follow-up instruction to redirect the agent>
-spellbook› /interrupt     # stop a runaway step
-spellbook› /quit          # end the session
-```
-
-The agent invokes the `soc-analyst` skill, runs passive checks (e.g. `gitleaks-check`),
-and summarizes a true-positive / false-positive / needs-investigation assessment. If it
-wants to run an *active* check, it will pause and ask you to approve — and it can only
-target hosts on your scope allowlist.
-
-Running `spellbook` with no arguments in an interactive terminal now opens a
-numbered terminal launcher. Direct subcommands still work unchanged.
-
-### 2b. Settings & top issues
-
-The launcher is a small workbench. On startup, if Wiz is configured and auto-fetch
-is on, it pulls your **top issues** (via the agent + Wiz MCP), caches them, and lists
-them so you can press a number to open a case with that issue already loaded as the
-subject — you start triaging immediately, in context.
-
-```
-Spellbook
-Top Wiz issues (high+, 5):
-  1. WIZ-12345  CRITICAL  Exposed AWS key — github-repo acme/widget-api
-  2. WIZ-12346  HIGH      Public S3 bucket — s3 acme-prod-logs
-  ...
-Actions:
-  f. Investigate from subject file     c. Chat with the analyst AI
-  w. Investigate by Wiz issue id       r. Refresh top issues
-  e. Collect evidence manually         s. Settings
-                                       a. Authenticate to Wiz   h. Help   q. Quit
-```
-
-- **A `spellbook` banner** greets you when the launcher opens.
-- **`a` Authenticate to Wiz** — prompts for client id/secret and validates them with an
-  OAuth2 client-credentials exchange (auto-detecting your tenant's Cognito/Auth0 endpoint).
-  Session-only; nothing is written to disk.
-- **`e` Collect evidence manually** — run a deterministic check (gitleaks, redacted)
-  directly on a local repo and append the raw output to a case as evidence — no agent in
-  the loop.
-- **`c` Chat with the analyst AI** — a free-form, safety-gated chat (also `spellbook chat`)
-  for reasoning and suggested lines of investigation, not pinned to a specific case.
-- **`s` Settings** — how many issues to pull (1–10), the minimum severity
-  (`CRITICAL`/`HIGH`/`MEDIUM`), and whether to auto-fetch on startup. Preferences persist
-  to `~/.config/spellbook/settings.json`; the cached feed lives at
-  `~/.cache/spellbook/top_issues.json` (issue metadata only — never credentials).
-- **`r` Refresh** — re-pull the feed now. Otherwise a fresh cache (≤ 1h, same settings)
-  is reused. `spellbook settings` edits the same preferences from the command line.
-
-### 3. Inspect the case
-
-Everything is written to a self-contained case directory:
-
-```
-cases/WIZ-12345/
-├── case.json        # subject, evidence chain, (later) verdict
-├── audit.log        # every gate decision + tool run, timestamped
-└── evidence/        # raw tool output (secrets redacted)
-    └── E001.txt
-```
-
-```bash
-spellbook show WIZ-12345        # subject + evidence chain + verdict, rendered
-cat cases/WIZ-12345/audit.log   # or read the raw audit trail
-```
-
-After a session you're offered to **record a verdict** (confirmed / refuted /
-inconclusive + rationale); you can also set one directly:
-
-```bash
-spellbook verdict WIZ-12345 --status confirmed --rationale "E001, E003 confirm the leak"
-```
-
-Example audit trail:
-
-```
-2026-06-19T19:43:24Z   RAN        Bash   passive   'gitleaks detect --source /tmp/x --redact'
-2026-06-19T19:43:24Z   GATE DENY  Bash   target not on owned-asset allowlist   'gh api https://evil.example.org'
+# --- The runner's per-run context (set by the control plane when it launches a runner) ---
+export SPELLBOOK_POSTURE=external          # or internal
+export SPELLBOOK_SCOPE="acme.com,10.0.0.0/24"   # owned-asset allowlist (hosts/IPs/CIDRs)
+export SPELLBOOK_AUTHORIZATIONS=/path/to/auths.json   # exploit-tier grants (JSON)
 ```
 
 ---
 
-## Can it run as a standalone binary?
+## Run it
 
-**Not as a single self-contained executable** — and that's a property of the
-architecture, not a missing feature:
+The control plane is a FastAPI app built by `create_app(orchestrator, store)`
+(`spellbook/control/app.py`). A minimal boot:
 
-- The Agent SDK shells out to the **Claude Code CLI** (a Node program), and
-- MCP servers (Wiz, etc.) are launched via **`npx`**, and
-- the **check tools** (`gitleaks`, …) are separate binaries the agent invokes.
+```python
+from spellbook.control.agent.google_agent import GoogleAgentClient, GenAIInteractionsBackend, RunnerEndpoint
+from spellbook.control.app import create_app
+from spellbook.control.orchestrator import Orchestrator
+from spellbook.control.store.store import Store, init_engine
+from google import genai   # once the # VERIFY (live SDK) spots are confirmed
 
-A bundler like PyInstaller/`shiv`/`pex` can package the *Python* side into one file, but
-it can't bundle Node, the `claude` CLI, or the check binaries — those must exist on the
-host regardless. So the supported distribution models are:
+store = Store(init_engine("postgresql+psycopg://.../spellbook"))   # or sqlite:// for local
+agent = GoogleAgentClient(GenAIInteractionsBackend(genai.Client()))
+orch = Orchestrator(
+    store=store, agent=agent,
+    runner_minter=lambda posture: RunnerEndpoint(url="https://runner/mcp", auth_header={...}),
+    scope_provider=lambda: {"acme.com"},
+)
+app = create_app(orch, store)   # uvicorn spellbook_boot:app
+```
 
-| Model | How | Best for |
-|---|---|---|
-| **pip package** *(current)* | `pip install -e .` / `pip install spellbook` | developers, CI |
-| **pipx / uv tool** | `pipx install .` — isolated venv, `spellbook` on PATH globally | end users on a workstation |
-| **Container image** *(recommended for "standalone")* | a Docker image bundling Python + Node + `claude` CLI + check tools + Spellbook | the closest thing to a portable, reproducible single artifact |
-| **Zipapp** | `shiv -c spellbook -o spellbook.pyz .` then `./spellbook.pyz` | one-file Python distribution *when* Node/CLI/tools are already present on the host |
+**Build the UI** (the React SPA is served by FastAPI from `web/dist`):
 
-If you want true "one artifact" portability, build a container — it's the only model
-that captures all of Spellbook's runtime dependencies in one place.
+```bash
+npm --prefix web install
+npm --prefix web run build       # → web/dist, served at /
+# or, for hot-reload dev against a running API on :8000:
+npm --prefix web run dev         # Vite dev server on :5173, proxies API routes
+```
+
+Then open **`/`**: browse findings (ingest from Wiz or add a manual test), open a finding to
+see its attack-path spine, launch a run (posture + tier), and watch each step charge or
+fracture as the chain is validated.
+
+The remote-MCP **attack-runner** runs as its own process/service:
+
+```bash
+SPELLBOOK_POSTURE=internal SPELLBOOK_SCOPE="10.0.0.0/24" \
+  python3.14 -m spellbook.runner.server    # FastMCP streamable-HTTP server
+```
 
 ---
 
-## How it fits together
+## Live verification
+
+Everything is tested against a fake Gemini backend. Three spots in
+`spellbook/control/agent/google_agent.py` are marked `# VERIFY (live SDK)` — the
+remote-MCP `ToolParam` shape, the terminal Interaction output field, and the
+`.interactions` accessor. Confirm these against a real Gemini API key to close the M0
+exit criterion; the safety core, runner, store, and API are fully functional today.
+
+---
+
+## Repository layout
 
 ```
-spellbook [menu]                       # cli.py callback → menu.py launcher (interactive TTY)
-   └─ investigate WIZ-12345            # or invoked directly
-        │
-        ├─ case/store.py     open/resume cases/WIZ-12345/
-        ├─ mcp/servers.py    Wiz MCP (issue ingestion)            ─┐
-        ├─ agent/options.py  build ClaudeAgentOptions              │  Claude Agent SDK
-        │     ├─ skills from .claude/skills/ (soc-analyst, …)      │  session
-        │     ├─ PreToolUse  → safety/classify + safety/scope  ←───┤  (every tool call
-        │     └─ PostToolUse → evidence + audit + redaction        │   passes the gate)
-        └─ agent/session.py  interactive ClaudeSDKClient loop     ─┘
+spellbook/
+  control/                    # FastAPI control plane
+    app.py                    # routes + serves the built SPA
+    orchestrator.py           # Finding × path × posture → gate → launch → poll → persist
+    agent/{google_agent,schema,prompts}.py   # Gemini Interactions client + Verdict
+    ingest/model.py           # Finding / Asset / Posture / AttackPath / AttackStep
+    ingest/wiz_api.py         # direct Wiz GraphQL client + map_issue
+    safety/{scope,authorization,decide}.py   # the enforced gate
+    store/{models,store}.py   # SQLAlchemy persistence (runs, paths, step results, audit)
+  runner/                     # the attack-runner (deployed external + internal)
+    server.py                 # FastMCP remote-MCP endpoint
+    dispatch.py               # per-call enforcement (classify → decide → audit → run)
+    tools/{network,web,exploit}.py   # reachability, http_probe, run_poc (M1 adds gcp_lateral)
+  safety/                     # legacy 3-tier classifier + host matcher (reused)
+web/                          # Vite/React SPA (src/, builds to web/dist)
+  src/components/StepChain.tsx   # the signature: the attack-path spine
+tests/                        # 161 tests: safety, runner, agent, store, orchestrator,
+                              #            attack paths, Wiz mapping, per-step, API
 ```
-
-- **Skills** live in `.claude/skills/` and are loaded from the filesystem
-  (`setting_sources=["user","project"]`). Add a check by dropping a new `SKILL.md` in —
-  the safety gate governs whatever tools it tries to use.
-- **The safety layer** (`spellbook/safety/`) is the real IP: `classify_bash`,
-  `classify_mcp`, and the owned-asset `in_scope` allowlist.
-- **The entrypoint** (`spellbook/cli.py`) opens the numbered launcher (`spellbook/menu.py`)
-  when run with no subcommand in an interactive terminal; in a pipe/non-TTY it prints help.
-  All subcommands remain directly invokable.
 
 ---
 
 ## Development
 
 ```bash
-pip install --user -e .
-python3.14 -m pytest tests/ -q        # safety gate, classifier, CLI routing + menu (no API needed)
+pip install -e .
+python3.14 -m pytest -q                                  # full suite (no GCP, no Gemini)
+python3.14 -m pytest tests/test_control_safety.py -q     # the load-bearing safety core
 ```
 
-The safety classifier, `PreToolUse` gate, CLI routing, and menu launcher are fully
-unit-tested offline — you can verify the security boundary and the entrypoint behaviour
-without spending any model calls.
+The safety core, runner dispatch, agent state machine, store, orchestrator, and API are
+fully unit-tested offline against fakes — you can verify the security boundary without
+spending model calls or touching any cloud.
 
 ---
 
 ## Roadmap
 
-- **Milestone 0** *(done)* — runnable spine: `investigate`, safety gate, evidence + audit.
-- **Milestone 1** — structured-output **Verdict**; more passive checks (source-correlation,
-  dependency, passive-surface); `case show` / `export`.
-- **Milestone 2** — active checks behind approval (secret validation, safe nuclei
-  templates); hard scope enforcement.
-- **Milestone 3** — `run --auto` / `batch` over a Wiz query; `remediate` to draft
-  PRs/tickets after review.
+- **M0** *(done, merged)* — the spine: safety core → runner → agent client → orchestrator
+  + store → FastAPI/UI. External, non-destructive validation end-to-end.
+- **Attack paths + Wiz + SPA** *(done)* — the attack-path model, direct Wiz GraphQL
+  ingestion, manual path entry, per-step + holistic validation, and the Vite/React SPA with
+  the attack-path spine.
+- **M1** — the in-VPC internal runner (metadata-token, IAM blast-radius, east-west
+  reachability), i.e. real `gcp_lateral` tools.
+- **M2** — the full-exploit executor behind the authorization gate.
+- **M3** — live run streaming, hardened Terraform for the two Cloud Run runners.
+
+---
+
+## Legacy triage CLI
+
+The prior incarnation — a read-only Wiz triage CLI on the Claude Agent SDK — still ships in
+the tree (`spellbook/cli.py`, `menu.py`, `agent/`, `case/`, `wiz/`, `collect.py`) and the
+`spellbook` console script. It is **superseded** by the validation platform and will be
+retired as the platform matures; its safety classifier (`spellbook/safety/`) and Wiz OAuth
+(`spellbook/wiz/auth.py`) are reused by the new code.
 
 ---
 
 ## Security notes
 
-- **Read-only by design.** Spellbook never performs state-changing actions; remediation
-  drafting is a separate, explicit, human-invoked step (Milestone 3).
-- **Credentials** come from the environment and are never written to case files.
-- **Secrets** are redacted at the evidence boundary (`gitleaks --redact` at the source;
-  regex redaction of MCP output) so they don't re-enter the model context.
-- **Untrusted input** (issue/repo text) is data, not instructions — enforced by the hook
-  layer, not just the prompt.
+- **Active exploitation is opt-in per target**, behind a signed-authorization +
+  blast-radius gate — and it's enforced code, not prose.
+- **Credentials** come from the environment; short-lived, minimally-scoped GCP tokens are
+  minted per run and delivered via Gemini's credential refresh.
+- **The agent cannot widen its own scope**: the runner binds scope/authorizations from the
+  environment (set by the control plane), not from tool arguments.
+- **Untrusted input** (finding text) is data, not instructions — enforced at the gate.
+- **Never validate against production crown jewels first** — use a disposable lab project.

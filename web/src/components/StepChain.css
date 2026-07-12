@@ -1,0 +1,74 @@
+/* The signature: a vertical attack-path spine whose conduits charge (held),
+   fracture (broken), or lie dormant (pending/skipped). */
+
+.chain { position: relative; }
+
+.terminal {
+  display: flex; align-items: center; gap: 12px; padding: 6px 0;
+  font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.06em; color: var(--muted);
+}
+.terminal .cap {
+  width: 34px; display: flex; justify-content: center;
+}
+.terminal .orb {
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--faint); box-shadow: 0 0 0 4px rgba(154, 148, 184, 0.12);
+}
+.terminal.impact .orb { background: var(--arc); box-shadow: 0 0 0 4px rgba(180, 131, 255, 0.15), 0 0 14px var(--arc); }
+
+.link { display: grid; grid-template-columns: 34px 1fr; gap: 14px; }
+
+.chain-rail { position: relative; display: flex; justify-content: center; }
+/* the conduit runs the full height of the row, behind the node */
+.chain-rail .conduit {
+  position: absolute; top: 0; bottom: 0; width: 2px;
+  background: var(--line-bright);
+}
+.link[data-status="validated"] .conduit { background: linear-gradient(var(--charge), var(--charge)); box-shadow: 0 0 10px rgba(79, 214, 160, 0.5); }
+.link[data-status="inconclusive"] .conduit { background: repeating-linear-gradient(var(--ember) 0 6px, transparent 6px 12px); }
+.link[data-status="skipped"] .conduit { background: repeating-linear-gradient(var(--faint) 0 3px, transparent 3px 9px); opacity: 0.7; }
+.link[data-status="pending"] .conduit { background: var(--line-bright); }
+/* the fracture: the conduit visibly severs */
+.link[data-status="refuted"] .conduit { background: var(--sever); }
+.link[data-status="refuted"] .conduit::after {
+  content: ""; position: absolute; top: calc(50% - 9px); left: -7px; width: 16px; height: 18px;
+  background: var(--void);
+  clip-path: polygon(50% 0, 62% 38%, 100% 42%, 70% 62%, 82% 100%, 50% 74%, 18% 100%, 30% 62%, 0 42%, 38% 38%);
+  border: 0;
+}
+
+.node {
+  position: relative; z-index: 1; margin-top: 20px;
+  width: 16px; height: 16px; border-radius: 50%;
+  background: var(--void); border: 2px solid var(--faint);
+}
+.link[data-posture="external"] .node { border-color: var(--arc); }
+.link[data-posture="internal"] .node { border-color: var(--deep); }
+.link[data-status="validated"] .node { background: var(--charge); border-color: var(--charge); box-shadow: 0 0 12px rgba(79, 214, 160, 0.7); }
+.link[data-status="refuted"] .node { background: var(--sever); border-color: var(--sever); box-shadow: 0 0 12px rgba(255, 92, 122, 0.7); }
+.link[data-status="inconclusive"] .node { border-color: var(--ember); }
+
+.link .body { padding: 14px 0 14px; }
+.link .body .head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.link .idx { font-family: var(--font-mono); font-size: 12px; color: var(--faint); }
+.link .tech { font-family: var(--font-display); font-weight: 600; font-size: 15px; letter-spacing: 0.02em; }
+.link .flow { font-family: var(--font-mono); font-size: 12px; color: var(--muted); margin-top: 4px; }
+.link .flow .arrow { color: var(--faint); margin: 0 6px; }
+.link .obs { color: var(--muted); font-size: 13px; margin-top: 6px; max-width: 62ch; }
+.link .obs .sv { font-family: var(--font-mono); }
+.link[data-status="refuted"] .obs .sv { color: var(--sever); }
+
+.breakflag {
+  display: inline-flex; align-items: center; gap: 6px; margin-left: auto;
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--sever);
+}
+
+.chain-summary {
+  font-family: var(--font-mono); font-size: 13px; margin-bottom: 16px;
+  padding: 10px 14px; border-radius: 8px; border: 1px solid var(--line-bright);
+  background: var(--panel-2);
+}
+.chain-summary.held { color: var(--charge); border-color: rgba(79, 214, 160, 0.35); }
+.chain-summary.broken { color: var(--sever); border-color: rgba(255, 92, 122, 0.35); }
+.chain-summary.partial { color: var(--ember); border-color: rgba(242, 180, 92, 0.35); }

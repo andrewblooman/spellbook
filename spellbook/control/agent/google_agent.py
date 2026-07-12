@@ -21,7 +21,7 @@ from typing import Any, Protocol
 
 from spellbook.control.agent import prompts
 from spellbook.control.agent.schema import Verdict
-from spellbook.control.ingest.model import Finding, Posture
+from spellbook.control.ingest.model import AttackPath, Finding, Posture
 
 # Interaction statuses we treat as terminal.
 COMPLETED = "completed"
@@ -77,6 +77,7 @@ class GoogleAgentClient:
         finding: Finding,
         posture: Posture,
         runner: RunnerEndpoint,
+        attack_path: AttackPath | None = None,
         extra_tools: list[Any] | None = None,
     ) -> str:
         """Create a background interaction; return its id for polling."""
@@ -86,7 +87,7 @@ class GoogleAgentClient:
             system_instruction=prompts.system_prompt(posture),
             tools=self._build_tools(runner) + list(extra_tools or []),
             response_mime_type="application/json",
-            input=prompts.finding_input(finding),
+            input=prompts.finding_input(finding, attack_path),
         )
         return interaction.id
 
