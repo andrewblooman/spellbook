@@ -5,13 +5,16 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "spellbook"
 version = "0.1.0"
-description = "Wiz security-issue triage CLI on the Claude Agent SDK (Milestone 0)"
+description = "Wiz finding exploitability-validation platform (external + internal attack-runners, Google Managed Agents)"
 requires-python = ">=3.14"
 dependencies = [
     "claude-agent-sdk>=0.2",
     "typer>=0.12",
     "pydantic>=2",
     "httpx>=0.27",
+    "mcp>=1.0",          # runner exposes tools to the agent as a remote MCP server
+    "sqlalchemy>=2.0",   # control-plane store
+    "google-genai>=1.0", # Gemini Interactions API (Managed Agents)
 ]
 
 [project.scripts]
