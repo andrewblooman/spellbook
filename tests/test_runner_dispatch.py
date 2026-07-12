@@ -91,6 +91,7 @@ def test_handler_error_is_surfaced_and_audited(fake_tools):
     ctx = _ctx()
     res = dispatch(ctx, "t_boom", "api.acme.com")
     assert res.allowed is True and res.error == "boom" and res.observation is None
+    assert res.reason == "handler_error"          # not the policy-allow reason
     assert ctx.audit.events[-1].detail == {"error": "boom"}
 
 

@@ -72,6 +72,6 @@ def dispatch(ctx: RunContext, tool_name: str, target: str, params: dict | None =
         ctx.audit.record(tool=tool_name, target=target, tier=tool.tier,
                          posture=ctx.posture.value, allowed=True,
                          reason="handler_error", detail={"error": str(exc)})
-        return ToolResult(True, decision.reason, tool_name, target, error=str(exc))
+        return ToolResult(True, "handler_error", tool_name, target, error=str(exc))
 
     return ToolResult(True, decision.reason, tool_name, target, observation=observation)

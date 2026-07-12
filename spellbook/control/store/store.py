@@ -74,15 +74,22 @@ class Store:
             s.add(Run(id=run_id, finding_id=finding.id, posture=posture.value, tier=tier,
                       status=status, authorization_id=authorization_id))
 
+    @staticmethod
+    def _require_run(s, run_id: str) -> Run:
+        run = s.get(Run, run_id)
+        if run is None:
+            raise LookupError(f"unknown run {run_id!r}")
+        return run
+
     def update_run(self, run_id: str, **fields) -> None:
         with self._session.begin() as s:
-            run = s.get(Run, run_id)
+            run = self._require_run(s, run_id)
             for key, value in fields.items():
                 setattr(run, key, value)
 
     def record_verdict(self, run_id: str, verdict: Verdict) -> None:
         with self._session.begin() as s:
-            run = s.get(Run, run_id)
+            run = self._require_run(s, run_id)
             run.verdict_label = verdict.label.value
             run.confidence = verdict.confidence
             run.verdict = verdict.model_dump(mode="json")
@@ -124,4 +131,5 @@ class Store:
         now = now or datetime.now(timezone.utc)
         with self._session() as s:
             records = s.scalars(select(AuthorizationRecord)).all()
-        return [r.to_authorization() for r in records if r.to_authorization().expires_at > now]
+        auths = (r.to_authorization() for r in records)
+        return [a for a in auths if a.expires_at > now]

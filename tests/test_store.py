@@ -68,6 +68,16 @@ def test_audit_rows_recorded(store):
     assert len(run.audit) == 1 and run.audit[0].allowed is True
 
 
+def test_update_run_unknown_id_raises(store):
+    with pytest.raises(LookupError):
+        store.update_run("missing", status="x")
+
+
+def test_record_verdict_unknown_id_raises(store):
+    with pytest.raises(LookupError):
+        store.record_verdict("missing", _verdict())
+
+
 def test_active_authorizations_excludes_expired(store):
     fresh = Authorization(id="A1", target="10.0.0.0/24", max_tier=ACTIVE_INVASIVE,
                           authorized_by="andy", blast_radius_note="lab",
