@@ -84,23 +84,31 @@ class Store:
 
     # --- attack paths -----------------------------------------------------
     def save_attack_path(self, path: AttackPath) -> None:
-        """Upsert a path, replacing its steps wholesale."""
+        """Upsert a path in place, replacing only its steps.
+
+        Updating the existing row (rather than delete+recreate) keeps the
+        ``attack_paths.id`` FK'd from runs/step-results intact; reassigning
+        ``rec.steps`` lets cascade delete-orphan swap the child steps.
+        """
         with self._session.begin() as s:
-            existing = s.get(AttackPathRecord, path.id)
-            if existing is not None:
-                s.delete(existing)   # cascade drops old steps
-                s.flush()
-            rec = AttackPathRecord(
-                id=path.id, finding_id=path.finding_id, name=path.name,
-                source=path.source.value, entry_point=path.entry_point,
-                impact=path.impact, raw=path.raw)
-            for step in path.steps:
-                rec.steps.append(AttackStepRecord(
+            rec = s.get(AttackPathRecord, path.id)
+            if rec is None:
+                rec = AttackPathRecord(id=path.id)
+                s.add(rec)
+            rec.finding_id = path.finding_id
+            rec.name = path.name
+            rec.source = path.source.value
+            rec.entry_point = path.entry_point
+            rec.impact = path.impact
+            rec.raw = path.raw
+            rec.steps = [
+                AttackStepRecord(
                     step_index=step.index, technique=step.technique,
                     description=step.description, from_entity=step.from_entity,
                     to_entity=step.to_entity, posture=step.posture.value,
-                    suggested_tool=step.suggested_tool, tier=step.tier))
-            s.add(rec)
+                    suggested_tool=step.suggested_tool, tier=step.tier)
+                for step in path.steps
+            ]
 
     @staticmethod
     def _to_attack_path(rec: AttackPathRecord) -> AttackPath:
@@ -131,12 +139,23 @@ class Store:
             return [self._to_attack_path(r) for r in recs]
 
     def path_step_results(self, path_id: str) -> list[StepResultRecord]:
-        """Every step result across all runs of this path — the merged diagnosis."""
+        """The merged diagnosis: one best result per step across all runs of this path.
+
+        A step is validated by whichever posture's run owns it, so across runs the same
+        step index can carry a `skipped` (from the other posture) alongside a real result.
+        Keep one per step: prefer non-`skipped`, then the latest record.
+        """
         with self._session() as s:
-            return list(s.scalars(
+            rows = list(s.scalars(
                 select(StepResultRecord).where(StepResultRecord.path_id == path_id)
-                .order_by(StepResultRecord.step_index)
+                .order_by(StepResultRecord.id)
             ))
+        best: dict[int, StepResultRecord] = {}
+        for r in rows:
+            current = best.get(r.step_index)
+            if current is None or (r.status != "skipped", r.id) >= (current.status != "skipped", current.id):
+                best[r.step_index] = r
+        return [best[i] for i in sorted(best)]
 
     # --- runs -------------------------------------------------------------
     def create_run(self, run_id: str, finding: Finding, posture: Posture, tier: str,

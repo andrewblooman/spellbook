@@ -91,10 +91,32 @@ def test_run_records_step_results_and_merges_by_path(store):
         step_results=[StepVerdict(step_index=2, status=StepStatus.VALIDATED,
                                   observation="assumed SA role")]))
 
+    # Merged diagnosis: one result per step; the internal VALIDATED for step 2
+    # overrides the external SKIPPED.
     merged = store.path_step_results("P1")
-    # 3 from external + 1 from internal, ordered by step index
-    assert len(merged) == 4
+    assert len(merged) == 3
+    assert [m.step_index for m in merged] == [0, 1, 2]
     assert merged[-1].step_index == 2 and merged[-1].status == "validated"
+
+
+def test_save_attack_path_preserves_runs(store):
+    """Re-saving a path (upsert) must not delete runs/step-results that FK it."""
+    store.save_finding(_finding())
+    store.save_attack_path(_path())
+    store.create_run("R1", _finding(), Posture.EXTERNAL, ACTIVE_NONINVASIVE,
+                     status="running", attack_path_id="P1")
+    store.record_verdict("R1", Verdict(
+        label=VerdictLabel.EXPLOITABLE, confidence=0.9, summary="ok",
+        step_results=[StepVerdict(step_index=0, status=StepStatus.VALIDATED)]))
+
+    # Upsert the same path with a changed name + fewer steps.
+    store.save_attack_path(AttackPath(id="P1", finding_id="F1", name="renamed",
+                                      steps=[AttackStep(index=0, technique="public_exposure")]))
+
+    run = store.get_run("R1")               # run + its step results survive
+    assert run is not None and len(run.step_results) == 1
+    path = store.get_attack_path("P1")       # path updated in place
+    assert path.name == "renamed" and len(path.steps) == 1
 
 
 def test_list_findings(store):

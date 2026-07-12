@@ -63,7 +63,8 @@ class WizAPIError(Exception):
 def issues_query() -> str:
     override = os.environ.get("WIZ_ISSUES_QUERY_FILE")
     if override and os.path.exists(override):
-        return open(override).read()
+        with open(override, encoding="utf-8") as fh:
+            return fh.read()
     return DEFAULT_ISSUES_QUERY
 
 
@@ -94,7 +95,13 @@ class WizClient:
     def execute(self, query: str, variables: dict | None = None) -> dict:
         if not self.api_url:
             raise WizAPIError("WIZ_API_URL is not set (the tenant GraphQL endpoint)")
-        client = self._http or httpx.Client(timeout=self.timeout)
+        if self._http is not None:
+            return self._request(self._http, query, variables)
+        # Own the client: context-manage it so the connection is closed after the call.
+        with httpx.Client(timeout=self.timeout) as client:
+            return self._request(client, query, variables)
+
+    def _request(self, client: httpx.Client, query: str, variables: dict | None) -> dict:
         try:
             resp = client.post(
                 self.api_url,
