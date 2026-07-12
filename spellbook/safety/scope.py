@@ -42,9 +42,14 @@ def extract_hosts(command: str) -> set[str]:
     return hosts
 
 
-def _host_allowed(host: str, allowlist: set[str]) -> bool:
+def host_allowed(host: str, allowlist: set[str]) -> bool:
+    """True if ``host`` is an allowlisted domain or a subdomain of one."""
     # Exact match or a subdomain/suffix match of an allowlisted entry.
     return any(host == a or host.endswith("." + a) for a in allowlist)
+
+
+# Backwards-compatible private alias (kept for existing callers/tests).
+_host_allowed = host_allowed
 
 
 def in_scope(command: str, allowlist: set[str] | None = None) -> bool:
