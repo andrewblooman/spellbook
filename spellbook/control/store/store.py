@@ -14,15 +14,26 @@ from sqlalchemy.orm import selectinload, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from spellbook.control.agent.schema import Verdict
-from spellbook.control.ingest.model import Asset, Finding, Posture, Source, Vector
+from spellbook.control.ingest.model import (
+    Asset,
+    AttackPath,
+    AttackStep,
+    Finding,
+    Posture,
+    Source,
+    Vector,
+)
 from spellbook.control.safety.authorization import Authorization
 from spellbook.control.store.models import (
+    AttackPathRecord,
+    AttackStepRecord,
     AuditRecord,
     AuthorizationRecord,
     Base,
     Evidence,
     FindingRecord,
     Run,
+    StepResultRecord,
 )
 
 
@@ -67,12 +78,74 @@ class Store:
                         host=rec.host, network_location=rec.network_location),
         )
 
+    def list_findings(self) -> list[FindingRecord]:
+        with self._session() as s:
+            return list(s.scalars(select(FindingRecord).order_by(FindingRecord.created_at.desc())))
+
+    # --- attack paths -----------------------------------------------------
+    def save_attack_path(self, path: AttackPath) -> None:
+        """Upsert a path, replacing its steps wholesale."""
+        with self._session.begin() as s:
+            existing = s.get(AttackPathRecord, path.id)
+            if existing is not None:
+                s.delete(existing)   # cascade drops old steps
+                s.flush()
+            rec = AttackPathRecord(
+                id=path.id, finding_id=path.finding_id, name=path.name,
+                source=path.source.value, entry_point=path.entry_point,
+                impact=path.impact, raw=path.raw)
+            for step in path.steps:
+                rec.steps.append(AttackStepRecord(
+                    step_index=step.index, technique=step.technique,
+                    description=step.description, from_entity=step.from_entity,
+                    to_entity=step.to_entity, posture=step.posture.value,
+                    suggested_tool=step.suggested_tool, tier=step.tier))
+            s.add(rec)
+
+    @staticmethod
+    def _to_attack_path(rec: AttackPathRecord) -> AttackPath:
+        return AttackPath(
+            id=rec.id, finding_id=rec.finding_id, name=rec.name,
+            source=Source(rec.source), entry_point=rec.entry_point, impact=rec.impact,
+            raw=rec.raw or {},
+            steps=[AttackStep(index=st.step_index, technique=st.technique,
+                              description=st.description, from_entity=st.from_entity,
+                              to_entity=st.to_entity, posture=Posture(st.posture),
+                              suggested_tool=st.suggested_tool, tier=st.tier)
+                   for st in rec.steps])
+
+    def get_attack_path(self, path_id: str) -> AttackPath | None:
+        with self._session() as s:
+            rec = s.scalars(
+                select(AttackPathRecord).where(AttackPathRecord.id == path_id)
+                .options(selectinload(AttackPathRecord.steps))
+            ).one_or_none()
+            return self._to_attack_path(rec) if rec is not None else None
+
+    def attack_paths_for_finding(self, finding_id: str) -> list[AttackPath]:
+        with self._session() as s:
+            recs = s.scalars(
+                select(AttackPathRecord).where(AttackPathRecord.finding_id == finding_id)
+                .options(selectinload(AttackPathRecord.steps))
+            ).all()
+            return [self._to_attack_path(r) for r in recs]
+
+    def path_step_results(self, path_id: str) -> list[StepResultRecord]:
+        """Every step result across all runs of this path — the merged diagnosis."""
+        with self._session() as s:
+            return list(s.scalars(
+                select(StepResultRecord).where(StepResultRecord.path_id == path_id)
+                .order_by(StepResultRecord.step_index)
+            ))
+
     # --- runs -------------------------------------------------------------
     def create_run(self, run_id: str, finding: Finding, posture: Posture, tier: str,
-                   *, status: str = "pending", authorization_id: str | None = None) -> None:
+                   *, status: str = "pending", authorization_id: str | None = None,
+                   attack_path_id: str | None = None) -> None:
         with self._session.begin() as s:
             s.add(Run(id=run_id, finding_id=finding.id, posture=posture.value, tier=tier,
-                      status=status, authorization_id=authorization_id))
+                      status=status, authorization_id=authorization_id,
+                      attack_path_id=attack_path_id))
 
     @staticmethod
     def _require_run(s, run_id: str) -> Run:
@@ -96,8 +169,14 @@ class Store:
             for i, step in enumerate(verdict.evidence_chain):
                 s.add(Evidence(run_id=run_id, step_index=i, tool=step.tool, target=step.target,
                                observation=step.observation, interpretation=step.interpretation))
+            for sr in verdict.step_results:
+                s.add(StepResultRecord(
+                    run_id=run_id, path_id=run.attack_path_id, step_index=sr.step_index,
+                    status=sr.status.value, observation=sr.observation,
+                    interpretation=sr.interpretation))
 
-    _RUN_EAGER = (selectinload(Run.evidence), selectinload(Run.audit))
+    _RUN_EAGER = (selectinload(Run.evidence), selectinload(Run.audit),
+                  selectinload(Run.step_results))
 
     def get_run(self, run_id: str) -> Run | None:
         with self._session() as s:

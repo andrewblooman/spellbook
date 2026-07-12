@@ -20,7 +20,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from spellbook.control.agent.google_agent import GoogleAgentClient, RunnerEndpoint
-from spellbook.control.ingest.model import Finding, Posture
+from spellbook.control.ingest.model import AttackPath, Finding, Posture
 from spellbook.control.safety.decide import decide
 from spellbook.control.store.models import Run
 from spellbook.control.store.store import Store
@@ -44,6 +44,7 @@ class Orchestrator:
         *,
         tier: str = ACTIVE_NONINVASIVE,
         authorization_id: str | None = None,
+        attack_path: AttackPath | None = None,
     ) -> str:
         """Open, gate, and (if permitted) launch a run. Returns the run id."""
         run_id = uuid.uuid4().hex
@@ -51,7 +52,8 @@ class Orchestrator:
 
         self.store.save_finding(finding)
         self.store.create_run(run_id, finding, posture, tier,
-                              status="pending", authorization_id=authorization_id)
+                              status="pending", authorization_id=authorization_id,
+                              attack_path_id=attack_path.id if attack_path else None)
 
         decision = decide(
             tier=tier,
@@ -67,7 +69,8 @@ class Orchestrator:
             return run_id
 
         runner = self.runner_minter(posture)
-        interaction_id = self.agent.launch(finding=finding, posture=posture, runner=runner)
+        interaction_id = self.agent.launch(finding=finding, posture=posture, runner=runner,
+                                           attack_path=attack_path)
         self.store.update_run(run_id, status="running", agent_job_id=interaction_id)
         return run_id
 

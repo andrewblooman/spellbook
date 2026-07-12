@@ -1,6 +1,14 @@
 # Spellbook per-case output dirs
 cases/
 
+# Web SPA (Vite/React) — build step, not committed
+web/node_modules/
+web/dist/
+web/vite.config.js
+web/vite.config.d.ts
+*.tsbuildinfo
+.env
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
