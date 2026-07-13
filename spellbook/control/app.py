@@ -125,6 +125,7 @@ def _run_out(run: Run) -> dict[str, Any]:
         "posture": run.posture,
         "tier": run.tier,
         "status": run.status,
+        "created_at": run.created_at.isoformat() if run.created_at else None,
         "agent_job_id": run.agent_job_id,
         "authorization_id": run.authorization_id,
         "verdict": run.verdict_label,

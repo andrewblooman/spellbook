@@ -55,6 +55,7 @@ export interface Run {
   posture: Posture;
   tier: Tier;
   status: string;
+  created_at: string | null;
   verdict: string | null;
   confidence: number | null;
   error: string | null;

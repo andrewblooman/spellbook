@@ -54,10 +54,19 @@ def context_from_env(audit: AuditSink | None = None) -> RunContext:
 
 
 def build_server(ctx: RunContext, name: str = "spellbook-runner"):
-    """Construct a FastMCP server exposing the tools valid for ``ctx.posture``."""
+    """Construct a FastMCP server exposing the tools valid for ``ctx.posture``.
+
+    Bind host/port are read explicitly from ``SPELLBOOK_HOST``/``SPELLBOOK_PORT``
+    (FastMCP's own ``FASTMCP_*`` env is not reliably wired to these fields), so a
+    containerised runner binds ``0.0.0.0`` and is reachable across the network.
+    """
     from mcp.server.fastmcp import FastMCP  # lazily imported; only needed to serve
 
-    server = FastMCP(name)
+    server = FastMCP(
+        name,
+        host=os.environ.get("SPELLBOOK_HOST", "127.0.0.1"),
+        port=int(os.environ.get("SPELLBOOK_PORT", "8000")),
+    )
 
     for tool in tools_for(ctx.posture):
         def make_handler(tool_name: str):

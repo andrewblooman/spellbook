@@ -1,4 +1,7 @@
-import { HashRouter, NavLink, Route, Routes } from "react-router-dom";
+import { HashRouter, Route, Routes } from "react-router-dom";
+import { Sidebar } from "./components/Sidebar";
+import { ComingSoon } from "./components/ComingSoon";
+import { Dashboard } from "./views/Dashboard";
 import { Findings } from "./views/Findings";
 import { FindingDetail } from "./views/FindingDetail";
 import { ManualBuilder } from "./views/ManualBuilder";
@@ -7,26 +10,18 @@ export function App() {
   return (
     <HashRouter>
       <div className="shell">
-        <nav className="rail">
-          <div className="brand">
-            <span className="glyph">🪄</span>
-            <div>
-              <h1>Spellbook</h1>
-              <small>exploit-path validation</small>
-            </div>
-          </div>
-          <NavLink to="/" end className="navlink">
-            <span className="dot" /> Findings
-          </NavLink>
-          <NavLink to="/new" className="navlink">
-            <span className="dot" /> New manual test
-          </NavLink>
-        </nav>
+        <Sidebar />
         <main className="stage">
           <Routes>
-            <Route path="/" element={<Findings />} />
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/findings" element={<Findings />} />
             <Route path="/findings/:id" element={<FindingDetail />} />
             <Route path="/new" element={<ManualBuilder />} />
+            {/* Scaffolded for later phases — nav is complete now. */}
+            <Route path="/agents" element={<ComingSoon title="Managed agents" note="The control-plane agent view lands next — live run status, posture, and runner endpoints." />} />
+            <Route path="/runs/:id" element={<ComingSoon title="Run result" note="The detailed results page is coming: verdict, evidence chain, per-step diagnosis, and the audit trail." />} />
+            <Route path="/settings" element={<ComingSoon title="Settings" note="Secrets and user management will live here." />} />
+            <Route path="/profile" element={<ComingSoon title="Profile" note="Profile preferences will live here — the light/dark toggle is in the sidebar for now." />} />
           </Routes>
         </main>
       </div>

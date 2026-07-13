@@ -1,0 +1,13 @@
+Side bar navigation
+Create attack vectors
+- how should we write these? YAML?
+Home page should be dashboard showing stats
+should have a way to see managed agents (control plane)
+should have detailed results page
+Settings page
+- secrets
+- user management
+User profile page
+-light mode / dark mode
+
+Overall theme should be wizard focused, softer text (Google font poppins)

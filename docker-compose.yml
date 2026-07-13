@@ -1,0 +1,60 @@
+# Spellbook stack: Postgres + control plane (FastAPI + SPA) + the two attack-runners.
+#
+#   docker compose up --build      ->  http://localhost:8000
+#
+# Live agent runs need a Gemini key (GEMINI_API_KEY, e.g. via .env) AND runners that
+# Google's managed agent can reach — not possible from local compose. Without a key the
+# stack still ingests, seeds, and serves the UI; the runners run and are reachable on the
+# compose network for direct exercise.
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: spellbook
+      POSTGRES_PASSWORD: spellbook
+      POSTGRES_DB: spellbook
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U spellbook -d spellbook"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  control:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    environment:
+      SPELLBOOK_DATABASE_URL: postgresql+psycopg://spellbook:spellbook@db:5432/spellbook
+      SPELLBOOK_SEED: "1"
+      SPELLBOOK_SCOPE: "example.com,shop.example.com,10.4.0.0/16"
+      SPELLBOOK_RUNNER_EXTERNAL_URL: http://runner-external:8000/mcp
+      SPELLBOOK_RUNNER_INTERNAL_URL: http://runner-internal:8000/mcp
+      SPELLBOOK_RUNNER_TOKEN: "${SPELLBOOK_RUNNER_TOKEN:-dev-token}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+
+  runner-external:
+    build: .
+    command: python -m spellbook.runner.server
+    environment:
+      SPELLBOOK_HOST: "0.0.0.0"       # bind the container iface (default is 127.0.0.1)
+      SPELLBOOK_PORT: "8000"
+      SPELLBOOK_POSTURE: external
+      SPELLBOOK_SCOPE: "example.com,shop.example.com"
+
+  runner-internal:
+    build: .
+    command: python -m spellbook.runner.server
+    environment:
+      SPELLBOOK_HOST: "0.0.0.0"
+      SPELLBOOK_PORT: "8000"
+      SPELLBOOK_POSTURE: internal
+      SPELLBOOK_SCOPE: "10.4.0.0/16"
+
+volumes:
+  pgdata:
