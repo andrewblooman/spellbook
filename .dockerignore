@@ -1,0 +1,17 @@
+.git
+.github
+.gitignore
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.venv
+venv
+env
+web/node_modules
+web/dist
+*.db
+*.sqlite3
+.env
+.env.*
+!.env.example
+tests

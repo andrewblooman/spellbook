@@ -15,6 +15,9 @@ dependencies = [
     "mcp>=1.0",          # runner exposes tools to the agent as a remote MCP server
     "sqlalchemy>=2.0",   # control-plane store
     "google-genai>=2.3", # Gemini Interactions API / Managed Agents (needs >=2.3.0)
+    "fastapi>=0.115",    # control-plane web surface (spellbook.control.app)
+    "uvicorn[standard]>=0.30",  # ASGI server for the control plane
+    "psycopg[binary]>=3.2",     # Postgres driver (postgresql+psycopg:// in prod/docker)
 ]
 
 [project.scripts]
