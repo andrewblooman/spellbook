@@ -23,15 +23,23 @@ impact. A run walks the chain and returns a **Verdict** (`EXPLOITABLE` / `NOT_EX
 / `INCONCLUSIVE` + confidence) *and* a **per-step diagnosis** showing exactly where the
 chain holds or breaks — rendered in a React SPA whose hero is the attack-path spine.
 
+![Spellbook dashboard](assets/Dashboard.png)
+
+*A screenshot of the Spellbook dashboard — exploitability posture across every ingested
+finding and validation run (verdict split, findings by severity, runs by posture, and
+recent activity).*
+
 > **History:** Spellbook began as a read-only Wiz *triage* CLI (built on the Claude Agent
 > SDK). It was **repurposed** into this exploitability-validation platform. The legacy CLI
 > modules still live in the tree (see [Legacy triage CLI](#legacy-triage-cli)) but are
 > superseded by the control plane described here.
 
-> **Status: M0 spine merged; attack paths + Wiz ingestion + SPA built.** Safety core,
-> runner, agent client, store, orchestrator, the FastAPI control plane, the attack-path
-> model, direct Wiz GraphQL ingestion, and the Vite/React UI are built and tested
-> (161 tests). The open item is the live Gemini wiring — see [Live verification](#live-verification).
+> **Status: M0 spine + M1 internal runner + M2 PoC executor merged; attack paths + Wiz
+> ingestion + SPA built.** Safety core, runner, agent client, store, orchestrator, the
+> FastAPI control plane, the attack-path model, direct Wiz GraphQL ingestion, the Vite/React
+> UI, the M1 internal (`gcp_lateral`) tools, and the M2 authorization-gated PoC catalog are
+> built and tested (179 tests). The open item is the live Gemini wiring — see
+> [Live verification](#live-verification).
 
 ---
 
@@ -229,12 +237,16 @@ spellbook/
   runner/                     # the attack-runner (deployed external + internal)
     server.py                 # FastMCP remote-MCP endpoint
     dispatch.py               # per-call enforcement (classify → decide → audit → run)
-    tools/{network,web,exploit}.py   # reachability, http_probe, run_poc (M1 adds gcp_lateral)
+    tools/{network,web,exploit}.py   # reachability, http_probe, run_poc
+    tools/gcp_lateral.py             # M1 internal: metadata_token, iam_blast_radius, east_west_reach
+    tools/gcp_backend.py             # injectable metadata/IAM backend (fake in tests)
+    tools/poc_catalog.py             # M2: the vetted PoC catalog (run_poc executes only these)
+    tools/poc_executor.py            # injectable HTTP/TCP exploit primitives (fake in tests)
   safety/                     # legacy 3-tier classifier + host matcher (reused)
 web/                          # Vite/React SPA (src/, builds to web/dist)
   src/components/StepChain.tsx   # the signature: the attack-path spine
-tests/                        # 161 tests: safety, runner, agent, store, orchestrator,
-                              #            attack paths, Wiz mapping, per-step, API
+tests/                        # 179 tests: safety, runner, agent, store, orchestrator, attack
+                              #            paths, Wiz mapping, per-step, gcp_lateral, poc, API
 ```
 
 ---
@@ -253,6 +265,39 @@ spending model calls or touching any cloud.
 
 ---
 
+## Run with Docker
+
+The whole stack — Postgres, the control plane (FastAPI + built SPA), and both attack-runners
+(external + internal) — comes up with one command:
+
+```bash
+cp .env.example .env          # optional: set GEMINI_API_KEY to enable live runs
+docker compose up --build     # → http://localhost:8000
+```
+
+- **`db`** — `postgres:16`, data on the `pgdata` volume; the schema is created on startup
+  (`init_engine` runs `create_all`, no migrations needed).
+- **`control`** — serves the SPA + API on `:8000`. Boots with `SPELLBOOK_SEED=1`, so a fresh
+  DB is populated with a demo attack path (external + internal) whose merged `StepChain` is
+  visible immediately — no Gemini key required.
+- **`runner-external` / `runner-internal`** — the two remote-MCP runners, one per posture,
+  bound to `0.0.0.0:8000` and reachable on the compose network at `http://runner-<posture>:8000/mcp`.
+
+The composition root is `spellbook/control/server.py` (`create_app_from_env`), the env-driven
+analog of the runner's `context_from_env`. Config is all environment (see `.env.example`):
+`SPELLBOOK_DATABASE_URL`, `SPELLBOOK_SCOPE`, `SPELLBOOK_RUNNER_*_URL`, `SPELLBOOK_SEED`, and
+`GEMINI_API_KEY`.
+
+> **Live agent runs need cloud, not compose.** Google's managed agent runs in Google's cloud
+> and cannot reach compose-internal runner URLs, so end-to-end *live* validation is a cloud
+> (M3) concern. Without a key the control plane still ingests, seeds, serves the UI, and
+> enforces the safety gate; a run that clears the scope gate fails loudly rather than silently.
+
+> ⚠️ Compose auto-reads `.env` for variable substitution, so it must be valid `KEY=VALUE`
+> dotenv (not freeform notes). Keep real secrets out of version control — `.env` is gitignored.
+
+---
+
 ## Roadmap
 
 - **M0** *(done, merged)* — the spine: safety core → runner → agent client → orchestrator
@@ -260,9 +305,15 @@ spending model calls or touching any cloud.
 - **Attack paths + Wiz + SPA** *(done)* — the attack-path model, direct Wiz GraphQL
   ingestion, manual path entry, per-step + holistic validation, and the Vite/React SPA with
   the attack-path spine.
-- **M1** — the in-VPC internal runner (metadata-token, IAM blast-radius, east-west
-  reachability), i.e. real `gcp_lateral` tools.
-- **M2** — the full-exploit executor behind the authorization gate.
+- **M1** *(done)* — the in-VPC internal runner: `gcp_lateral` tools (`metadata_token`,
+  `iam_blast_radius`, `east_west_reach`) reaching the GCE metadata server + IAM
+  `testIamPermissions` through an injectable backend. INTERNAL-posture only; the borrowed
+  SA's raw token never leaves the runner (only a fingerprint is surfaced).
+- **M2** *(done)* — the full-exploit executor behind the authorization gate: `run_poc`
+  executes only **named, vetted PoCs** from `poc_catalog.py` (the agent can never supply
+  its own exploit code) through the injectable `poc_executor.py` primitives. Doubly bounded:
+  `decide()` unlocks the `active_invasive` tier via an `Authorization`, and the catalog
+  bounds what "authorized" can actually do.
 - **M3** — live run streaming, hardened Terraform for the two Cloud Run runners.
 
 ---
