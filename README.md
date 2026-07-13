@@ -118,6 +118,10 @@ across runs**. Each run returns per-step statuses (`validated` / `refuted` /
 `inconclusive` / `skipped`) plus the holistic verdict — so you see the exact step where a
 chain breaks.
 
+![Spellbook Findings](assets/findings.png)
+
+> *A screenshot of the Spellbook findings page*
+
 ---
 
 ## Prerequisites
