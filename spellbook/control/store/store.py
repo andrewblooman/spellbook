@@ -194,6 +194,27 @@ class Store:
                     status=sr.status.value, observation=sr.observation,
                     interpretation=sr.interpretation))
 
+    def claim_dispatched_run(self, posture: Posture) -> Run | None:
+        """Atomically hand the oldest ``dispatched`` run for ``posture`` to a worker.
+
+        Flips it ``dispatched`` → ``running`` inside one transaction so two workers
+        can't claim the same run. ``FOR UPDATE SKIP LOCKED`` is used where the dialect
+        supports it (Postgres); SQLAlchemy omits it on SQLite, where the StaticPool's
+        single connection already serialises claims.
+        """
+        with self._session.begin() as s:
+            run = s.scalars(
+                select(Run)
+                .where(Run.status == "dispatched", Run.posture == posture.value)
+                .order_by(Run.created_at).limit(1)
+                .with_for_update(skip_locked=True)
+            ).one_or_none()
+            if run is None:
+                return None
+            run.status = "running"
+            run_id = run.id
+        return self.get_run(run_id)
+
     _RUN_EAGER = (selectinload(Run.evidence), selectinload(Run.audit),
                   selectinload(Run.step_results))
 

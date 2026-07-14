@@ -1,15 +1,18 @@
 """FastAPI control plane — the web surface over the orchestrator + store.
 
-Endpoints (M0):
+Endpoints:
 - ``POST /findings``           ingest a finding (manual, or normalised from Wiz)
 - ``POST /authorizations``     create a signed exploit-tier authorization
-- ``POST /runs``               start a validation run (gated pre-launch)
-- ``POST /runs/{id}/complete`` poll the agent to completion, persist the verdict
+- ``POST /runs``               start a validation run (gated pre-launch → dispatched)
 - ``GET  /runs`` / ``/runs/{id}``  list / fetch runs with verdict + evidence + audit
+- ``GET  /internal/runs/claim``      (worker) claim a dispatched run for a posture
+- ``POST /internal/runs/{id}/result`` (worker) report the verdict + audit back
 
-The app is built by :func:`create_app` with an injected orchestrator + store, so
-it runs under ``TestClient`` with fakes (no GCP, no Gemini). ``complete`` is
-synchronous for M0; production would background it or use the interaction webhook.
+The agent loop runs in a separate Cloud Run **agent-worker** inside the VPC; it
+claims dispatched runs and posts results via the ``/internal`` API (bearer-authed
+with ``SPELLBOOK_WORKER_TOKEN``). The app is built by :func:`create_app` with an
+injected orchestrator + store, so it runs under ``TestClient`` with fakes (no GCP,
+no model, no worker).
 """
 
 from __future__ import annotations
@@ -18,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Response
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -30,6 +33,10 @@ _WEB_INDEX = _WEB_DIST / "index.html"
 
 from spellbook.control.ingest.model import (
     Asset, AttackPath, AttackStep, Finding, Posture, Source, Vector,
+)
+from spellbook.control.agent.schema import Verdict
+from spellbook.control.ingest.wire import (
+    attack_path_to_dict, authorization_to_dict, finding_to_dict,
 )
 from spellbook.control.ingest.wiz_api import WizAPIError, WizClient, ingest_from_wiz
 from spellbook.control.orchestrator import Orchestrator
@@ -116,6 +123,26 @@ class WizIngestIn(BaseModel):
     first: int = 20
 
 
+class AuditEventIn(BaseModel):
+    """One audit event a worker reports — validated so malformed input is a 422, not a 500."""
+
+    tool: str
+    target: str
+    tier: str
+    posture: str
+    allowed: bool
+    reason: str
+    detail: dict = Field(default_factory=dict)
+
+
+class ResultIn(BaseModel):
+    """A worker's reported outcome for a run: a verdict (or an error) + audit trail."""
+
+    verdict: dict | None = None
+    error: str | None = None
+    audit: list[AuditEventIn] = Field(default_factory=list)
+
+
 # --- serialisation --------------------------------------------------------
 def _run_out(run: Run) -> dict[str, Any]:
     return {
@@ -171,8 +198,14 @@ def _path_out(path: AttackPath) -> dict[str, Any]:
     }
 
 
-def create_app(orchestrator: Orchestrator, store: Store) -> FastAPI:
+def create_app(orchestrator: Orchestrator, store: Store,
+               *, worker_token: str | None = None) -> FastAPI:
     app = FastAPI(title="Spellbook", summary="Wiz finding exploitability validation")
+
+    def _require_worker(authorization: str | None) -> None:
+        """Gate the ``/internal`` API. When ``worker_token`` is unset (tests/dev), open."""
+        if worker_token and authorization != f"Bearer {worker_token}":
+            raise HTTPException(status_code=401, detail="invalid worker token")
 
     if (_WEB_DIST / "assets").is_dir():
         app.mount("/assets", StaticFiles(directory=_WEB_DIST / "assets"), name="assets")
@@ -255,9 +288,34 @@ def create_app(orchestrator: Orchestrator, store: Store) -> FastAPI:
         )
         return _run_out(store.get_run(run_id))
 
-    @app.post("/runs/{run_id}/complete")
-    def complete_run(run_id: str) -> dict:
-        run = orchestrator.complete_run(run_id)
+    @app.get("/internal/runs/claim")
+    def claim_run(posture: Posture,
+                  authorization: str | None = Header(default=None)) -> Any:
+        """A worker claims the next dispatched run for its posture (204 if none)."""
+        _require_worker(authorization)
+        job = orchestrator.claim(posture)
+        if job is None:
+            return Response(status_code=204)
+        return {
+            "run_id": job.run_id,
+            "posture": job.posture.value,
+            "finding": finding_to_dict(job.finding),
+            "attack_path": attack_path_to_dict(job.attack_path),
+            "scope": sorted(job.scope),
+            "authorizations": [authorization_to_dict(a) for a in job.authorizations],
+        }
+
+    @app.post("/internal/runs/{run_id}/result")
+    def submit_result(run_id: str, body: ResultIn,
+                      authorization: str | None = Header(default=None)) -> dict:
+        """A worker reports the verdict (or error) + audit trail for a run."""
+        _require_worker(authorization)
+        try:
+            verdict = Verdict.model_validate(body.verdict) if body.verdict is not None else None
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"bad verdict: {exc}") from exc
+        run = orchestrator.record_result(run_id, verdict=verdict, error=body.error,
+                                         audit_events=[a.model_dump() for a in body.audit])
         if run is None:
             raise HTTPException(status_code=404, detail=f"unknown run {run_id!r}")
         return _run_out(run)

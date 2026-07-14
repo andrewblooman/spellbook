@@ -227,3 +227,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Terraform (never commit provider binaries / state / local dirs)
+deploy/terraform/.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+*.tfvars

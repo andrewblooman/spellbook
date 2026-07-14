@@ -9,8 +9,7 @@ RUN npm --prefix web install
 COPY web/ web/
 RUN npm --prefix web run build
 
-# --- Stage 2: python runtime (serves control plane OR a runner) -----------
-# One image, two roles: docker-compose overrides `command` per service.
+# --- Stage 2: control-plane runtime (default target) ----------------------
 FROM python:3.14-slim AS runtime
 ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 WORKDIR /app
@@ -26,3 +25,17 @@ RUN pip install -e .
 
 EXPOSE 8000
 CMD ["python", "-m", "spellbook.control.server"]
+
+# --- Stage 3: agent-worker (runtime + Node.js + Claude Code CLI) -----------
+# The Claude Agent SDK drives the `claude` Code CLI, which needs Node.js, so the
+# worker image adds it. Build with `--target worker`. Runs the in-VPC pull loop;
+# needs no inbound port (it claims work from the control plane).
+FROM runtime AS worker
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl ca-certificates gnupg \
+ && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+ && apt-get install -y --no-install-recommends nodejs \
+ && npm install -g @anthropic-ai/claude-code \
+ && apt-get purge -y --auto-remove gnupg curl \
+ && rm -rf /var/lib/apt/lists/*
+CMD ["python", "-m", "spellbook.worker.server"]

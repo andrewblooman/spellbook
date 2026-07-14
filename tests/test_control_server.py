@@ -1,8 +1,9 @@
 """Tests for the env-driven control-plane composition root.
 
 Confirms ``create_app_from_env`` wires a working app from the environment: seeding
-populates the DB, and (with no Gemini key) a run that clears the scope gate fails
-loudly via the DisabledAgent rather than silently doing nothing.
+populates the DB, the scope gate denies out-of-scope runs, an in-scope run reaches
+``dispatched`` (a worker will claim it), and the ``/internal`` API is bearer-gated
+when ``SPELLBOOK_WORKER_TOKEN`` is set.
 """
 
 import pytest
@@ -15,8 +16,7 @@ from spellbook.control import server
 def env(monkeypatch):
     monkeypatch.setenv("SPELLBOOK_DATABASE_URL", "sqlite://")
     monkeypatch.setenv("SPELLBOOK_SEED", "1")
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("SPELLBOOK_WORKER_TOKEN", raising=False)
     return monkeypatch
 
 
@@ -34,39 +34,25 @@ def test_seed_populates_findings_and_runs(env):
     ]
 
 
-def test_no_key_uses_disabled_agent():
-    assert isinstance(server._build_agent(), server.DisabledAgent)
-
-
-def test_disabled_agent_launch_raises_clear_error(env):
-    # In scope → the run clears decide(), reaches the agent, and fails loudly.
+def test_in_scope_run_is_dispatched(env):
     env.setenv("SPELLBOOK_SCOPE", "10.4.2.0/24")
-    client = TestClient(server.create_app_from_env(), raise_server_exceptions=False)
+    client = TestClient(server.create_app_from_env())
     resp = client.post("/runs", json={"finding_id": "F-1025", "posture": "external"})
-    assert resp.status_code == 500  # RuntimeError from DisabledAgent.launch surfaced, not swallowed
+    assert resp.status_code == 201 and resp.json()["status"] == "dispatched"
 
 
 def test_out_of_scope_run_is_gracefully_denied(env):
-    env.setenv("SPELLBOOK_SCOPE", "")  # nothing owned → decide() denies before the agent
+    env.setenv("SPELLBOOK_SCOPE", "")  # nothing owned → decide() denies
     client = TestClient(server.create_app_from_env())
     resp = client.post("/runs", json={"finding_id": "F-1025", "posture": "external"})
     assert resp.status_code == 201 and resp.json()["status"] == "denied"
 
 
-def test_runner_minter_requires_configured_url(env, monkeypatch):
-    monkeypatch.delenv("SPELLBOOK_RUNNER_EXTERNAL_URL", raising=False)
-    from spellbook.control.ingest.model import Posture
-
-    mint = server._runner_minter()
-    with pytest.raises(RuntimeError, match="no runner URL"):
-        mint(Posture.EXTERNAL)
-
-
-def test_runner_minter_builds_endpoint_with_token(monkeypatch):
-    monkeypatch.setenv("SPELLBOOK_RUNNER_EXTERNAL_URL", "http://runner-external:8000/mcp")
-    monkeypatch.setenv("SPELLBOOK_RUNNER_TOKEN", "tok123")
-    from spellbook.control.ingest.model import Posture
-
-    ep = server._runner_minter()(Posture.EXTERNAL)
-    assert ep.url == "http://runner-external:8000/mcp"
-    assert ep.auth_header == {"Authorization": "Bearer tok123"}
+def test_internal_api_gated_when_token_set(env):
+    env.setenv("SPELLBOOK_SCOPE", "")
+    env.setenv("SPELLBOOK_WORKER_TOKEN", "secret")
+    client = TestClient(server.create_app_from_env())
+    assert client.get("/internal/runs/claim", params={"posture": "external"}).status_code == 401
+    ok = client.get("/internal/runs/claim", params={"posture": "external"},
+                    headers={"Authorization": "Bearer secret"})
+    assert ok.status_code == 204  # authed, but nothing dispatched

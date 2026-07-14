@@ -5,16 +5,15 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "spellbook"
 version = "0.1.0"
-description = "Wiz finding exploitability-validation platform (external + internal attack-runners, Google Managed Agents)"
+description = "Wiz finding exploitability-validation platform (in-VPC Claude Agent SDK workers + control plane)"
 requires-python = ">=3.14"
 dependencies = [
-    "claude-agent-sdk>=0.2",
+    "claude-agent-sdk>=0.2",  # in-VPC agent-worker brain (spellbook.worker)
     "typer>=0.12",
     "pydantic>=2",
-    "httpx>=0.27",
-    "mcp>=1.0",          # runner exposes tools to the agent as a remote MCP server
+    "httpx>=0.27",       # worker ↔ control-plane internal API
+    "mcp>=1.0",          # runner tools exposed to the agent as an in-process SDK MCP server
     "sqlalchemy>=2.0",   # control-plane store
-    "google-genai>=2.3", # Gemini Interactions API / Managed Agents (needs >=2.3.0)
     "fastapi>=0.115",    # control-plane web surface (spellbook.control.app)
     "uvicorn[standard]>=0.30",  # ASGI server for the control plane
     "psycopg[binary]>=3.2",     # Postgres driver (postgresql+psycopg:// in prod/docker)
@@ -22,6 +21,7 @@ dependencies = [
 
 [project.scripts]
 spellbook = "spellbook.cli:app"
+spellbook-worker = "spellbook.worker.server:main"
 
 [tool.setuptools.packages.find]
 include = ["spellbook*"]

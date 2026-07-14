@@ -1,26 +1,30 @@
-"""The glue: a Finding × posture → a launched agent run → a persisted verdict.
+"""The glue: a Finding × posture → a dispatched run → a persisted verdict.
 
-Responsibilities, in order:
+The agent loop no longer runs here — it runs in a Cloud Run **agent-worker** inside
+the VPC (Claude Agent SDK). The orchestrator's job is the control-plane half:
+
 1. persist the finding and open a `Run`;
-2. **pre-launch gate** (defense in depth) — run the same :func:`decide` the runner
+2. **pre-launch gate** (defense in depth) — run the same :func:`decide` the worker
    enforces, so an exploit-tier run with no covering authorization never even
-   launches, and the decision is audited;
-3. mint a scoped remote-MCP runner endpoint for the posture and launch the agent;
-4. on completion, persist the verdict + evidence chain.
+   dispatches, and the decision is audited;
+3. if permitted, mark the run ``dispatched`` — a worker for that posture will claim it;
+4. :meth:`claim` hands a dispatched run's inputs (finding, attack path, scope,
+   authorizations — server-authoritative) to a worker and flips it ``running``;
+5. :meth:`record_result` persists the verdict + evidence + audit the worker reports back.
 
-Dependencies are injected (store, agent client, runner minter, scope provider) so
-the orchestrator is exercised end-to-end with fakes — no GCP, no Gemini.
+Dependencies are injected (store, scope provider) so the orchestrator is exercised
+end-to-end with fakes — no GCP, no model, no worker.
 """
 
 from __future__ import annotations
 
-import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
-from spellbook.control.agent.google_agent import GoogleAgentClient, RunnerEndpoint
+from spellbook.control.agent.schema import Verdict
 from spellbook.control.ingest.model import AttackPath, Finding, Posture
+from spellbook.control.safety.authorization import Authorization
 from spellbook.control.safety.decide import decide
 from spellbook.control.store.models import Run
 from spellbook.control.store.store import Store
@@ -30,11 +34,21 @@ from spellbook.control.store.store import Store
 from spellbook.safety.classify import ACTIVE_INVASIVE, ACTIVE_NONINVASIVE, PASSIVE  # noqa: F401
 
 
+@dataclass(frozen=True)
+class ClaimedJob:
+    """A dispatched run handed to a worker. Inputs are server-authoritative."""
+
+    run_id: str
+    finding: Finding
+    posture: Posture
+    scope: set[str]
+    authorizations: Sequence[Authorization]
+    attack_path: AttackPath | None = None
+
+
 @dataclass
 class Orchestrator:
     store: Store
-    agent: GoogleAgentClient
-    runner_minter: Callable[[Posture], RunnerEndpoint]
     scope_provider: Callable[[], set[str]]
 
     def start_run(
@@ -46,7 +60,7 @@ class Orchestrator:
         authorization_id: str | None = None,
         attack_path: AttackPath | None = None,
     ) -> str:
-        """Open, gate, and (if permitted) launch a run. Returns the run id."""
+        """Open, gate, and (if permitted) dispatch a run. Returns the run id."""
         run_id = uuid.uuid4().hex
         target = finding.asset.target
 
@@ -68,26 +82,65 @@ class Orchestrator:
             self.store.update_run(run_id, status="denied", error=decision.reason)
             return run_id
 
-        runner = self.runner_minter(posture)
-        interaction_id = self.agent.launch(finding=finding, posture=posture, runner=runner,
-                                           attack_path=attack_path)
-        self.store.update_run(run_id, status="running", agent_job_id=interaction_id)
+        # A worker for this posture will claim it via `claim`.
+        self.store.update_run(run_id, status="dispatched")
         return run_id
 
-    def complete_run(self, run_id: str, *, sleep=time.sleep) -> Run | None:
-        """Poll the agent to completion and persist the verdict/evidence."""
+    def claim(self, posture: Posture) -> ClaimedJob | None:
+        """Hand the next dispatched run for ``posture`` to a worker, or ``None``.
+
+        Scope and authorizations come from the control plane here — not from the
+        worker, and never from the agent — so the agent cannot widen its own scope.
+        """
+        run = self.store.claim_dispatched_run(posture)
+        if run is None:
+            return None
+        finding = self.store.get_finding(run.finding_id)
+        attack_path = (self.store.get_attack_path(run.attack_path_id)
+                       if run.attack_path_id else None)
+        return ClaimedJob(
+            run_id=run.id,
+            finding=finding,
+            posture=Posture(run.posture),
+            scope=self.scope_provider(),
+            authorizations=self.store.active_authorizations(),
+            attack_path=attack_path,
+        )
+
+    def record_result(
+        self,
+        run_id: str,
+        *,
+        verdict: Verdict | None,
+        error: str | None = None,
+        audit_events: Sequence[dict] = (),
+    ) -> Run | None:
+        """Persist a worker's reported verdict + evidence + audit trail.
+
+        Only a claimed (``running``) run accepts a result. A duplicate, out-of-order,
+        or stray report against a terminal/denied/unclaimed run is a no-op — this keeps
+        the internal result endpoint idempotent and blocks unexpected state transitions.
+        """
         run = self.store.get_run(run_id)
-        if run is None or run.status != "running" or not run.agent_job_id:
+        if run is None:
+            return None
+        if run.status != "running":
             return run
 
-        result = self.agent.run_to_completion(run.agent_job_id, sleep=sleep)
-        if result.verdict is not None:
-            self.store.record_verdict(run_id, result.verdict)
+        for ev in audit_events:
+            self.store.add_audit(
+                run_id=run_id, tool=ev["tool"], target=ev["target"], tier=ev["tier"],
+                posture=ev["posture"], allowed=ev["allowed"], reason=ev["reason"],
+                detail=ev.get("detail"),
+            )
+
+        if verdict is not None:
+            self.store.record_verdict(run_id, verdict)
             self.store.update_run(run_id, status="completed")
         else:
             self.store.update_run(
                 run_id,
-                status="completed_no_verdict" if result.done else "error",
-                error=result.error,
+                status="error" if error is not None else "completed_no_verdict",
+                error=error,
             )
         return self.store.get_run(run_id)

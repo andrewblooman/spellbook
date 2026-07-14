@@ -6,7 +6,7 @@ export function VerdictBadge({ verdict }: { verdict: string | null }) {
 
 export function StatusText({ status }: { status: string }) {
   const map: Record<string, string> = {
-    running: "ember", pending: "muted", denied: "sev",
+    running: "ember", dispatched: "ember", pending: "muted", denied: "sev",
     completed: "hold", error: "sev", completed_no_verdict: "ember",
   };
   return <span className={`badge ${map[status] ?? "muted"}`}>{status.replace(/_/g, " ")}</span>;

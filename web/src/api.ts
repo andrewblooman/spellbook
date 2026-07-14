@@ -47,6 +47,4 @@ export const api = {
     attack_path_id?: string | null;
     authorization_id?: string | null;
   }) => req<Run>("POST", "/runs", payload),
-
-  completeRun: (id: string) => req<Run>("POST", `/runs/${encodeURIComponent(id)}/complete`),
 };
