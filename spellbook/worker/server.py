@@ -50,13 +50,17 @@ async def run_claimed(validator: AgentValidator, claimed: ClaimedRun) -> tuple[A
 
 
 async def poll_once(validator: AgentValidator, client: ControlClient, posture: Posture) -> bool:
-    """Claim + run + report one job. Returns True if a job was processed."""
-    claimed = client.claim(posture)
+    """Claim + run + report one job. Returns True if a job was processed.
+
+    The control-plane calls use a sync ``httpx.Client``, so they're offloaded to a
+    thread to keep the async loop (and the SDK's own I/O) from stalling on a network hiccup.
+    """
+    claimed = await asyncio.to_thread(client.claim, posture)
     if claimed is None:
         return False
     result, audit = await run_claimed(validator, claimed)
-    client.post_result(claimed.run_id, verdict=result.verdict, error=result.error,
-                       audit_events=audit.events)
+    await asyncio.to_thread(client.post_result, claimed.run_id, verdict=result.verdict,
+                            error=result.error, audit_events=audit.events)
     return True
 
 

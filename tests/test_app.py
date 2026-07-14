@@ -74,6 +74,16 @@ def test_internal_api_requires_worker_token(client):
     assert client.post("/internal/runs/x/result", json={"verdict": None}).status_code == 401
 
 
+def test_malformed_audit_is_422(client):
+    client.post("/findings", json=_FINDING)
+    run_id = client.post("/runs", json={"finding_id": "F1", "posture": "external"}).json()["id"]
+    client.get("/internal/runs/claim", params={"posture": "external"}, headers=_AUTH)
+    # An audit entry missing required fields must fail validation, not 500 in record_result.
+    resp = client.post(f"/internal/runs/{run_id}/result",
+                       json={"verdict": _VERDICT, "audit": [{"tool": "http_probe"}]}, headers=_AUTH)
+    assert resp.status_code == 422
+
+
 def test_run_on_unknown_finding_is_404(client):
     assert client.post("/runs", json={"finding_id": "nope", "posture": "external"}).status_code == 404
 

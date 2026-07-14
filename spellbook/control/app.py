@@ -123,12 +123,24 @@ class WizIngestIn(BaseModel):
     first: int = 20
 
 
+class AuditEventIn(BaseModel):
+    """One audit event a worker reports — validated so malformed input is a 422, not a 500."""
+
+    tool: str
+    target: str
+    tier: str
+    posture: str
+    allowed: bool
+    reason: str
+    detail: dict = Field(default_factory=dict)
+
+
 class ResultIn(BaseModel):
     """A worker's reported outcome for a run: a verdict (or an error) + audit trail."""
 
     verdict: dict | None = None
     error: str | None = None
-    audit: list[dict] = Field(default_factory=list)
+    audit: list[AuditEventIn] = Field(default_factory=list)
 
 
 # --- serialisation --------------------------------------------------------
@@ -303,7 +315,7 @@ def create_app(orchestrator: Orchestrator, store: Store,
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=f"bad verdict: {exc}") from exc
         run = orchestrator.record_result(run_id, verdict=verdict, error=body.error,
-                                         audit_events=body.audit)
+                                         audit_events=[a.model_dump() for a in body.audit])
         if run is None:
             raise HTTPException(status_code=404, detail=f"unknown run {run_id!r}")
         return _run_out(run)

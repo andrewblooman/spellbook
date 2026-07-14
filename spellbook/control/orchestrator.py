@@ -115,10 +115,17 @@ class Orchestrator:
         error: str | None = None,
         audit_events: Sequence[dict] = (),
     ) -> Run | None:
-        """Persist a worker's reported verdict + evidence + audit trail."""
+        """Persist a worker's reported verdict + evidence + audit trail.
+
+        Only a claimed (``running``) run accepts a result. A duplicate, out-of-order,
+        or stray report against a terminal/denied/unclaimed run is a no-op — this keeps
+        the internal result endpoint idempotent and blocks unexpected state transitions.
+        """
         run = self.store.get_run(run_id)
         if run is None:
             return None
+        if run.status != "running":
+            return run
 
         for ev in audit_events:
             self.store.add_audit(
@@ -133,7 +140,7 @@ class Orchestrator:
         else:
             self.store.update_run(
                 run_id,
-                status="error" if error else "completed_no_verdict",
+                status="error" if error is not None else "completed_no_verdict",
                 error=error,
             )
         return self.store.get_run(run_id)

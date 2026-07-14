@@ -97,6 +97,22 @@ def test_record_result_without_verdict_marks_error():
     assert run.status == "error" and run.error == "verdict_parse_failed"
 
 
+def test_record_result_only_accepts_a_claimed_run():
+    store, orch = _orch()
+    run_id = orch.start_run(_finding(), Posture.EXTERNAL)  # dispatched, not yet claimed
+    verdict = Verdict.model_validate_json(_VERDICT_JSON)
+
+    # A result for a run that was never claimed is a no-op — status stays dispatched.
+    run = orch.record_result(run_id, verdict=verdict)
+    assert run.status == "dispatched" and run.verdict_label is None
+
+    # After a claim it completes; a second (duplicate) report is idempotent.
+    orch.claim(Posture.EXTERNAL)
+    assert orch.record_result(run_id, verdict=verdict).status == "completed"
+    again = orch.record_result(run_id, verdict=None, error="late")
+    assert again.status == "completed" and again.error is None
+
+
 def test_pre_launch_decision_is_audited():
     store, orch = _orch(scope={"other.com"})
     run_id = orch.start_run(_finding(), Posture.EXTERNAL)
