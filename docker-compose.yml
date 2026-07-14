@@ -1,11 +1,11 @@
-# Spellbook stack: Postgres + control plane (FastAPI + SPA) + the two attack-runners.
+# Spellbook stack: Postgres + control plane (FastAPI + SPA) + the two agent-workers.
 #
 #   docker compose up --build      ->  http://localhost:8000
 #
-# Live agent runs need a Gemini key (GEMINI_API_KEY, e.g. via .env) AND runners that
-# Google's managed agent can reach — not possible from local compose. Without a key the
-# stack still ingests, seeds, and serves the UI; the runners run and are reachable on the
-# compose network for direct exercise.
+# Live agent runs need an Anthropic key (ANTHROPIC_API_KEY, e.g. via .env). Each
+# worker runs the Claude Agent SDK loop and claims dispatched runs for its posture
+# from the control plane over the internal API. Without a key the stack still
+# ingests, seeds, and serves the UI; workers idle-poll until a key + a run exist.
 
 services:
   db:
@@ -33,28 +33,29 @@ services:
       SPELLBOOK_DATABASE_URL: postgresql+psycopg://spellbook:spellbook@db:5432/spellbook
       SPELLBOOK_SEED: "1"
       SPELLBOOK_SCOPE: "example.com,shop.example.com,10.4.0.0/16"
-      SPELLBOOK_RUNNER_EXTERNAL_URL: http://runner-external:8000/mcp
-      SPELLBOOK_RUNNER_INTERNAL_URL: http://runner-internal:8000/mcp
-      SPELLBOOK_RUNNER_TOKEN: "${SPELLBOOK_RUNNER_TOKEN:-dev-token}"
-      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      SPELLBOOK_WORKER_TOKEN: "${SPELLBOOK_WORKER_TOKEN:-dev-token}"
 
-  runner-external:
-    build: .
-    command: python -m spellbook.runner.server
+  worker-external:
+    build:
+      context: .
+      target: worker
+    depends_on: [control]
     environment:
-      SPELLBOOK_HOST: "0.0.0.0"       # bind the container iface (default is 127.0.0.1)
-      SPELLBOOK_PORT: "8000"
       SPELLBOOK_POSTURE: external
-      SPELLBOOK_SCOPE: "example.com,shop.example.com"
+      SPELLBOOK_CONTROL_URL: http://control:8000
+      SPELLBOOK_WORKER_TOKEN: "${SPELLBOOK_WORKER_TOKEN:-dev-token}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
 
-  runner-internal:
-    build: .
-    command: python -m spellbook.runner.server
+  worker-internal:
+    build:
+      context: .
+      target: worker
+    depends_on: [control]
     environment:
-      SPELLBOOK_HOST: "0.0.0.0"
-      SPELLBOOK_PORT: "8000"
       SPELLBOOK_POSTURE: internal
-      SPELLBOOK_SCOPE: "10.4.0.0/16"
+      SPELLBOOK_CONTROL_URL: http://control:8000
+      SPELLBOOK_WORKER_TOKEN: "${SPELLBOOK_WORKER_TOKEN:-dev-token}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
 
 volumes:
   pgdata:

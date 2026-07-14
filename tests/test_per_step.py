@@ -1,21 +1,23 @@
-"""Phase C: per-step validation through the orchestrator + the attack-path API."""
+"""Per-step validation through the orchestrator + the attack-path API.
+
+Step results are reported by the worker via `record_result` / the internal API and
+merged onto the path for the StepChain view.
+"""
 
 import json
 
 import pytest
 from fastapi.testclient import TestClient
 
-from spellbook.safety.classify import ACTIVE_NONINVASIVE
-from spellbook.control.agent.google_agent import GoogleAgentClient, RunnerEndpoint
+from spellbook.control.agent.schema import Verdict
 from spellbook.control.app import create_app
 from spellbook.control.ingest.model import (
     Asset, AttackPath, AttackStep, Finding, Posture, Source, Vector,
 )
 from spellbook.control.orchestrator import Orchestrator
 from spellbook.control.store.store import Store, init_engine
-from tests.test_google_agent import FakeInteractions
 
-_VERDICT_STEPS = json.dumps({
+_VERDICT_STEPS = {
     "label": "INCONCLUSIVE", "confidence": 0.5, "summary": "external portion holds",
     "evidence_chain": [],
     "step_results": [
@@ -24,7 +26,10 @@ _VERDICT_STEPS = json.dumps({
         {"step_index": 1, "status": "validated", "observation": "no auth"},
         {"step_index": 2, "status": "skipped", "observation": "internal step"},
     ],
-})
+}
+
+_WORKER_TOKEN = "wtok"
+_AUTH = {"Authorization": f"Bearer {_WORKER_TOKEN}"}
 
 
 def _finding():
@@ -39,50 +44,29 @@ def _path():
                              AttackStep(index=2, technique="iam_privesc", posture=Posture.INTERNAL)])
 
 
-def _orch(backend):
+def _orch():
     store = Store(init_engine())
-    orch = Orchestrator(
-        store=store, agent=GoogleAgentClient(backend, poll_interval=0),
-        runner_minter=lambda p: RunnerEndpoint("https://runner/mcp", {"Authorization": "Bearer x"}),
-        scope_provider=lambda: {"acme.com"},
-    )
-    return store, orch
+    return store, Orchestrator(store=store, scope_provider=lambda: {"acme.com"})
 
 
 def test_run_with_path_persists_step_results():
-    store, orch = _orch(FakeInteractions(["running", "completed"], output_text=_VERDICT_STEPS))
+    store, orch = _orch()
     store.save_finding(_finding())
     store.save_attack_path(_path())
     run_id = orch.start_run(_finding(), Posture.EXTERNAL, attack_path=_path())
-    run = orch.complete_run(run_id, sleep=lambda _s: None)
+    orch.claim(Posture.EXTERNAL)
+    run = orch.record_result(run_id, verdict=Verdict.model_validate(_VERDICT_STEPS))
     assert run.attack_path_id == "P1"
     assert {sr.step_index for sr in run.step_results} == {0, 1, 2}
-    # merged view for the path exposes the same results
     assert len(store.path_step_results("P1")) == 3
-
-
-def test_prompt_includes_attack_path_steps():
-    backend = FakeInteractions(["running"])
-    store, orch = _orch(backend)
-    store.save_finding(_finding())
-    store.save_attack_path(_path())
-    orch.start_run(_finding(), Posture.EXTERNAL, attack_path=_path())
-    sent_input = backend.created_kwargs["input"]
-    assert "Attack path" in sent_input and "step 0 [external] public_exposure" in sent_input
 
 
 # --- API ------------------------------------------------------------------
 @pytest.fixture
 def client():
     store = Store(init_engine())
-    orch = Orchestrator(
-        store=store,
-        agent=GoogleAgentClient(FakeInteractions(["running", "completed"],
-                                                 output_text=_VERDICT_STEPS), poll_interval=0),
-        runner_minter=lambda p: RunnerEndpoint("https://runner/mcp", {"Authorization": "Bearer x"}),
-        scope_provider=lambda: {"acme.com"},
-    )
-    return TestClient(create_app(orch, store))
+    orch = Orchestrator(store=store, scope_provider=lambda: {"acme.com"})
+    return TestClient(create_app(orch, store, worker_token=_WORKER_TOKEN))
 
 
 _MANUAL_PATH = {
@@ -108,10 +92,12 @@ def test_run_against_path_shows_merged_step_results(client):
     client.post("/attack-paths", json=_MANUAL_PATH)
     run = client.post("/runs", json={"finding_id": "MF1", "posture": "external",
                                      "attack_path_id": "MP1"}).json()
-    assert run["attack_path_id"] == "MP1"
-    done = client.post(f"/runs/{run['id']}/complete").json()
+    assert run["attack_path_id"] == "MP1" and run["status"] == "dispatched"
+
+    client.get("/internal/runs/claim", params={"posture": "external"}, headers=_AUTH)
+    done = client.post(f"/internal/runs/{run['id']}/result",
+                       json={"verdict": _VERDICT_STEPS, "audit": []}, headers=_AUTH).json()
     assert len(done["step_results"]) == 3
-    # merged onto the path
     path = client.get("/attack-paths/MP1").json()
     assert len(path["step_results"]) == 3
 
@@ -131,5 +117,4 @@ def test_run_with_unknown_path_is_404(client):
 
 
 def test_wiz_ingest_without_config_is_502(client):
-    # No WIZ_API_URL / creds in the test env → the client errors cleanly.
     assert client.post("/wiz/ingest", json={"first": 5}).status_code == 502

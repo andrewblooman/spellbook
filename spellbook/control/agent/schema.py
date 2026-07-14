@@ -1,9 +1,9 @@
 """The structured exploitability verdict the agent must return.
 
-Delivered as JSON (``response_mime_type='application/json'``) and parsed with
-pydantic. The same schema is embedded in the system prompt so the model returns a
-shape we can validate, regardless of the exact structured-output surface of the
-Interactions API.
+The agent concludes with a single JSON object matching this schema, which the
+worker parses with pydantic. The same schema is embedded in the system prompt
+(:mod:`spellbook.control.agent.prompts`) so the model returns a shape we can
+validate — provider-agnostic, independent of any structured-output surface.
 """
 
 from __future__ import annotations

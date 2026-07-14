@@ -74,11 +74,12 @@ function PathPanel({
   async function launch() {
     setBusy(true); setErr("");
     try {
-      const run = await api.startRun({
+      await api.startRun({
         finding_id: findingId, posture, tier, attack_path_id: path.id,
         authorization_id: tier === "active_invasive" ? auth || null : null,
       });
-      if (run.status === "running") await api.completeRun(run.id);
+      // The run is now dispatched; an in-VPC agent-worker claims it and reports
+      // the verdict back asynchronously. The runs list reflects its progress.
       await onRan();
     } catch (e) {
       setErr((e as Error).message);

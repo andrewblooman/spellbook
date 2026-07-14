@@ -5,8 +5,8 @@ VPC: read the instance's identity from the metadata server, then measure the
 blast radius of the service account it can borrow. Those live GCP surfaces are
 reached only through a :class:`GcpBackend` — a thin Protocol — so the tool logic
 is unit-tested against a fake and the ``httpx``/metadata coupling lives in one
-adapter (:class:`MetadataGcpBackend`). This mirrors the ``InteractionsBackend``
-injection in :mod:`spellbook.control.agent.google_agent`.
+adapter (:class:`MetadataGcpBackend`). This mirrors the ``QueryFn`` injection in
+:mod:`spellbook.worker.loop`.
 
 **Credentials never leave the runner.** The backend can mint an access token
 (``testIamPermissions`` needs one), but the token string is used internally and

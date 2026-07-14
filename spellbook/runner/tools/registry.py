@@ -4,7 +4,8 @@ Every runner tool declares its side-effect **tier** and the **postures** it is
 valid in *up front*, as data. The dispatcher (:mod:`spellbook.runner.dispatch`)
 reads the declared tier to make its enforcement decision — the tier is never
 inferred from a binary name or trusted from the agent. This fixed, self-describing
-contract is exactly what gets exported to Gemini as a remote-MCP tool list.
+contract is exactly what the worker exports to the agent as in-process SDK MCP tools
+(:mod:`spellbook.worker.tools`).
 """
 
 from __future__ import annotations
